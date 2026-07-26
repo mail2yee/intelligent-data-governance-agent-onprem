@@ -7,6 +7,7 @@ stream via the same step/token/final SSE event shape.
 import json
 from collections.abc import AsyncIterator
 
+from .integrations import wrenai_client
 from .integrations.llm_client import stream_chat_completion
 
 GREETING_WORDS = {
@@ -75,6 +76,67 @@ def build_prompt(user_msg: str, lang: str, catalog: dict) -> str:
        maturity level and data quality score.
     4. Reply entirely in {lang_name}, regardless of what language the user's request was written in.
     """
+
+
+def build_sql_prompt(user_msg: str, catalog: dict) -> str:
+    """Prompt asking the LLM to write SQL against the data_products
+    semantic model instead of recommending a subject in free text - the
+    resulting SQL gets executed through WrenAI's governed engine
+    (wrenai_client.py), which structurally can't return a row that
+    doesn't exist. This is what actually enforces zero-hallucination
+    here; build_prompt()'s reply is still generated for the user-facing
+    text, but no longer trusted for deciding matched_products."""
+    ids = json.dumps(list(catalog.keys()), ensure_ascii=False)
+    return f"""
+    You have a Postgres table `data_products` with columns (all text):
+    id, name, description, owner, maturity_level, data_quality_score,
+    frequency, tables_joined, db_type, db_host, db_port, db_schema.
+    It currently has rows for exactly these ids: {ids}
+
+    Write ONE SQL SELECT statement, selecting only the `id` and `name`
+    columns from `data_products`, that finds the row(s) matching this
+    request: "{user_msg}"
+    Use ILIKE with '%...%' on name/description/tables_joined to match.
+    If nothing in the table plausibly matches, reply with exactly:
+    NO_MATCH
+    Reply with the SQL (or NO_MATCH) only - no explanation, no markdown
+    code fences, no trailing semicolon.
+    """
+
+
+def _extract_sql(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned.split("\n", 1)[-1] if "\n" in cleaned else cleaned
+    return cleaned.strip().rstrip(";").strip()
+
+
+async def resolve_via_semantic_layer(user_msg: str, catalog: dict) -> list[str]:
+    """Ask the LLM to write SQL against the data_products semantic model
+    and execute it through WrenAI's governed engine - matched ids come
+    from real query rows, not from scanning free-form LLM prose.
+
+    Returns [] for a legitimate "nothing matches" (the LLM replied
+    NO_MATCH, or the query genuinely returned no rows) - that's a
+    verified answer, not a failure. Raises on any actual integration
+    failure (LLM unreachable for this second call, WrenAI/MDL not
+    available, invalid SQL rejected by governance, etc.) - callers
+    should treat that like any other integration failure in this app
+    and fall back accordingly, not treat it as "verified: no match".
+    """
+    sql_reply = ""
+    async for piece in stream_chat_completion(
+        [{"role": "user", "content": build_sql_prompt(user_msg, catalog)}]
+    ):
+        sql_reply += piece
+    sql = _extract_sql(sql_reply)
+    if not sql or sql.upper() == "NO_MATCH":
+        return []
+
+    await wrenai_client.sync_catalog(catalog)
+    rows = await wrenai_client.resolve_matches(sql)
+    return [row["id"] for row in rows if isinstance(row, dict) and row.get("id") in catalog]
 
 
 # Crude keyword-to-product map used only when the LLM gateway is
@@ -152,16 +214,34 @@ async def run_chat(user_msg: str, lang: str, catalog: dict) -> AsyncIterator[str
             ):
                 matched_products.append(product_id)
 
-        not_found_markers = (
-            ["抱歉", "沒有找到"]
-            if lang == "zh"
-            else ["sorry", "no data subject", "doesn't match", "does not match"]
-        )
-        if any(m.lower() in reply.lower() for m in not_found_markers):
-            matched_products = []
-            yield step("⚠️ 判定此需求與資料目錄無關，已啟動 Zero Hallucination 攔截。")
+        verified: list[str] | None = None
+        try:
+            yield step("🧬 透過語意層 (WrenAI) 驗證比對結果...")
+            verified = await resolve_via_semantic_layer(user_msg, catalog)
+        except Exception as e:
+            yield step(
+                f"⚠️ 語意層驗證失敗（{e}），改用文字比對結果。"
+                if lang == "zh"
+                else f"⚠️ Semantic layer verification failed ({e}), falling back to text matching."
+            )
+
+        if verified is not None:
+            matched_products = verified
+            if matched_products:
+                yield step(f"🏁 語意層驗證完畢，推薦：{json.dumps(matched_products)}")
+            else:
+                yield step("⚠️ 判定此需求與資料目錄無關，已啟動 Zero Hallucination 攔截。")
         else:
-            yield step(f"🏁 任務規劃與執行完畢，推薦：{json.dumps(matched_products)}")
+            not_found_markers = (
+                ["抱歉", "沒有找到"]
+                if lang == "zh"
+                else ["sorry", "no data subject", "doesn't match", "does not match"]
+            )
+            if any(m.lower() in reply.lower() for m in not_found_markers):
+                matched_products = []
+                yield step("⚠️ 判定此需求與資料目錄無關，已啟動 Zero Hallucination 攔截。")
+            else:
+                yield step(f"🏁 任務規劃與執行完畢，推薦：{json.dumps(matched_products)}")
     except Exception as e:
         yield step(
             f"⚠️ LLM 無法連線（{e}），降級至本地關鍵字比對。"

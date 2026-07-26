@@ -12,7 +12,7 @@ Camunda), and what business logic / UI direction to carry over.
 
 **這是什麼：** GCP PoC（`data_governance_agent_poc.ai`，另一個 repo）的 on-prem 重建版，因為公司內網是氣隔離（air-gapped）——連得到 GitHub，但連不到 PyPI/npm/Docker Hub——原本 PoC 用的 Gemini/Firestore/Dataplex/Camunda SaaS 全部要換成內網可用的服務。兩個 repo **故意不共用程式碼**，重用的是行為/設計，不是檔案。細節在 `HANDOFF.md`。
 
-**技術堆疊：** 後端 FastAPI + PostgreSQL，前端 React + Vite，Camunda（用 `pyzeebe`/gRPC）跟 DataHub（GraphQL）都是真的串接（不是 mock），串不上時會 graceful fallback（例如查目錄失敗就退回內建的假目錄，LLM 打不通就退回本地關鍵字比對）。
+**技術堆疊：** 後端 FastAPI + PostgreSQL，前端 React + Vite，Camunda（用 `pyzeebe`/gRPC）跟 DataHub（GraphQL）都是真的串接（不是 mock），串不上時會 graceful fallback（例如查目錄失敗就退回內建的假目錄，LLM 打不通就退回本地關鍵字比對）。另外還內嵌了 WrenAI（`wrenai` pip 套件，**不是**另外一個 service）當語意層——LLM 對照語意模型欄位名組 SQL，WrenAI 的 governed engine 執行並擋掉任何沒宣告過的欄位/資料表，用來取代原本「靠 prompt 指令+事後字串比對」的推薦機制，讓「這句話該推薦哪個資料主體」這件事變成結構性零幻想，而不是只靠 LLM 自己乖。
 
 **目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試；後端 36 個 pytest、前端 29 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。還沒確認的三件事：LLM gateway 是不是真的走 OpenAI-compatible 格式、Camunda 的 BPMN process 還沒部署、DataHub 的欄位對應（`customProperties`）還沒對到真實 instance 驗證過。
 
@@ -65,6 +65,8 @@ flowchart LR
         DH["DataHub\nGraphQL API"]
     end
 
+    WREN["WrenAI (wrenai package)\nembedded in backend process,\ngoverned SQL against data_products"]
+
     MOCK["Fallback: hardcoded mock catalog /\nlocal keyword chat match"]
 
     U -->|HTTP| FE
@@ -73,6 +75,8 @@ flowchart LR
     BE -->|"chat completions, streamed"| LLM
     BE -->|"start process instance"| CAM
     BE -->|"query catalog"| DH
+    BE -->|"sync catalog + governed SQL"| WREN
+    WREN --> PG
     BE -. on any integration failure .-> MOCK
 ```
 
@@ -171,7 +175,15 @@ just the *where*.
   the product catalog (mapping `customProperties` to the fields the
   frontend expects); falls back to a hardcoded 3-item mock catalog if
   DataHub is unreachable or empty.
-- `tests/` — the pytest suite (36 tests), one file per module above.
+- `integrations/wrenai_client.py` — WrenAI semantic layer, embedded as a
+  Python library (not a service, see HANDOFF.md for why that matters).
+  Mirrors the DataHub catalog into a `data_products` table
+  (`sync_catalog()`) and executes agent-written SQL against it through a
+  governed engine (`resolve_matches()`) that structurally can't return a
+  row outside the declared semantic model (`../wren/project/`) - this is
+  what `chat.py`'s `resolve_via_semantic_layer()` uses for
+  zero-hallucination data-subject matching.
+- `tests/` — the pytest suite (42 tests), one file per module above.
 
 **Frontend** (`frontend/src/`):
 - `App.jsx` — top-level state (lang, theme, current view, cart, tickets)
@@ -228,6 +240,7 @@ step applies there too).
 ```
 backend/                    FastAPI API (Python) — see backend/README.md
 frontend/                   React + Vite SPA — see frontend/README.md
+wren/project/                WrenAI semantic model (MDL) - see app/integrations/wrenai_client.py
 k8s/                        placeholder for future Kubernetes manifests (not needed yet — Docker is fine for now)
 scripts/collect-debug-log.sh  one-command diagnostics collector, see TESTING_LOG.md
 debug-logs/                 output of the script above, committed for review from home

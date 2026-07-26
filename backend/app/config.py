@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     datahub_api_url: str = "http://localhost:8080"
     datahub_api_token: str = ""
 
+    # WrenAI semantic layer project directory (see ../../wren/project and
+    # integrations/wrenai_client.py). Resolved relative to the process's
+    # working directory, which differs between local dev (run from
+    # backend/, so the repo-root wren/ is one level up) and Docker (WORKDIR
+    # /app, where the Dockerfile copies it to /app/wren_project) - the
+    # docker-compose.yml environment overrides this for the container case.
+    wren_project_path: str = "../wren/project"
+
     cors_origins: str = "http://localhost:5173"
 
     # Used to pad a ticket's approver list up to a minimum of 3 when the

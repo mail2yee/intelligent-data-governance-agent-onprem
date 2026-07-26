@@ -105,3 +105,88 @@ async def test_run_chat_llm_failure_falls_back_to_local_match(monkeypatch):
     assert final["matched_products"] == ["customer-capacity-allocation"]
     step_texts = [e["text"] for e in events if e["type"] == "step"]
     assert any("降級" in t for t in step_texts)
+
+
+async def _noop_sync(catalog):
+    return None
+
+
+def _fake_stream_by_prompt(sql_reply, prose_reply="Some prose reply."):
+    """Returns a fake stream_chat_completion that replies differently to
+    the SQL-generation prompt (build_sql_prompt's "Write ONE SQL" marker)
+    vs. the original prose-reply prompt, since run_chat now calls
+    stream_chat_completion twice per successful turn."""
+
+    async def _fake(messages):
+        prompt = messages[0]["content"]
+        if "Write ONE SQL" in prompt:
+            yield sql_reply
+        else:
+            yield prose_reply
+
+    return _fake
+
+
+async def test_run_chat_semantic_layer_verified_match_overrides_text_match(monkeypatch):
+    # Prose reply text-matches "customer-capacity-allocation", but the
+    # semantic layer's governed query says move-forecast-summary - the
+    # verified, structural answer should win.
+    monkeypatch.setattr(
+        "app.chat.stream_chat_completion",
+        _fake_stream_by_prompt(
+            sql_reply="SELECT id, name FROM data_products WHERE id = 'move-forecast-summary'",
+            prose_reply="Specific Customer Capacity Allocation looks relevant.",
+        ),
+    )
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    async def _fake_resolve(sql):
+        return [{"id": "move-forecast-summary", "name": "FAB Production Move Forecast Summary"}]
+
+    monkeypatch.setattr("app.chat.wrenai_client.resolve_matches", _fake_resolve)
+
+    events = await _collect_events(run_chat("need a report", "en", CATALOG))
+    assert events[-1]["matched_products"] == ["move-forecast-summary"]
+
+
+async def test_run_chat_semantic_layer_no_match_short_circuits_before_wrenai(monkeypatch):
+    monkeypatch.setattr(
+        "app.chat.stream_chat_completion",
+        _fake_stream_by_prompt(sql_reply="NO_MATCH", prose_reply="Sorry, nothing matches."),
+    )
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    called = False
+
+    async def _should_not_be_called(sql):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr("app.chat.wrenai_client.resolve_matches", _should_not_be_called)
+
+    events = await _collect_events(run_chat("employee salary lookup", "en", CATALOG))
+    assert events[-1]["matched_products"] == []
+    assert called is False  # NO_MATCH never even reaches the governed engine
+
+
+async def test_run_chat_semantic_layer_failure_falls_back_to_text_match(monkeypatch):
+    monkeypatch.setattr(
+        "app.chat.stream_chat_completion",
+        _fake_stream_by_prompt(
+            sql_reply="SELECT id FROM data_products WHERE id = 'customer-capacity-allocation'",
+            prose_reply="Specific Customer Capacity Allocation is a great match.",
+        ),
+    )
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    async def _boom(sql):
+        raise RuntimeError("MDL not built")
+
+    monkeypatch.setattr("app.chat.wrenai_client.resolve_matches", _boom)
+
+    events = await _collect_events(run_chat("capacity please", "en", CATALOG))
+    final = events[-1]
+    assert final["matched_products"] == ["customer-capacity-allocation"]
+    step_texts = [e["text"] for e in events if e["type"] == "step"]
+    assert any("Semantic layer verification failed" in t for t in step_texts)

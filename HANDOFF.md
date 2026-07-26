@@ -52,7 +52,7 @@ decisions across manually; do not try to build a compatibility layer.
 | Workflow engine | Camunda SaaS (`login.cloud.camunda.io`), fire-and-forget, not really wired to approval state | Camunda **self-managed** (on-prem), real `pyzeebe` client wired in (see `backend/app/integrations/camunda_client.py`) — but no BPMN process is deployed yet (confirmed with the user), so it currently fails gracefully every time until one exists. `CAMUNDA_PROCESS_ID` in `.env` is the only thing to change once it does. |
 | Data catalog | Dataplex (GCP) | DataHub GraphQL API, real client wired in (see `backend/app/integrations/datahub_client.py`) — assumes `maturity_level`/`data_quality_score`/etc. live as DataHub *customProperties* (confirmed assumption with the user) and derives each product's `id` by slugifying its DataHub display name. Falls back to the same hardcoded mock catalog as the GCP PoC if DataHub is unreachable or returns nothing. |
 | Ticket storage | Firestore | PostgreSQL (see `backend/app/db.py`) |
-| Semantic layer (NL -> structured query) | N/A | Not in scope for v1. WrenAI was mentioned as a possible future addition if DataHub metadata alone isn't enough for this — don't build anything for it yet |
+| Semantic layer (zero-hallucination data-subject matching) | N/A | **Decided and built (2026-07-27):** WrenAI, embedded as a Python library (`wrenai[postgres]`) inside the backend process - see `backend/app/integrations/wrenai_client.py` and `wren/project/`. Scope is deliberately narrow: verify *which catalog data subject* matches a chat query, not full NL -> SQL -> real-data-answer execution (that stays out of scope, see below) |
 | Frontend | Single Python string containing HTML/CSS/JS, served by FastAPI | React (Vite) SPA, calling the FastAPI backend as a separate JSON/SSE API |
 
 ## Business logic and data model to preserve
@@ -194,6 +194,66 @@ facts only reachable from inside the company network:
 The "目錄維護"/Catalog Admin nav item is still a disabled placeholder
 (was in the PoC too — no catalog editing UI ever existed there either).
 
+**WrenAI semantic layer, added 2026-07-27** (`backend/app/integrations/wrenai_client.py`,
+`wren/project/`): the user decided this is needed so that `chat.py`'s
+data-subject matching is structurally zero-hallucination, not just
+prompt-instructed. Confirmed by actually installing `wrenai` locally and
+smoke-testing it (not just reading docs) — see the sibling
+`agent_mem0_poc` repo's `memory-api/wren_client.py` / README for the
+original proof-of-concept this was ported from (same pattern, already
+verified end-to-end there against a real Postgres, including confirming
+`strict_mode` governance actually rejects invalid columns):
+
+- **Architecture note, easy to get wrong:** WrenAI had a major
+  rearchitecture on 2026-05-07. The old "docker-compose service with a
+  REST/GraphQL API" shape is now called **Wren GenBI Classic** (frozen on
+  the upstream repo's `legacy/v1` branch) — current WrenAI is a plain
+  **Python package** (`wrenai[postgres]`) imported directly into the
+  backend process (`wren.engine.WrenEngine`), not a separate container.
+  Don't reintroduce a `wren-ai-service`/`wren-ui` container based on
+  older docs or search results — they describe the retired architecture.
+- **What it actually does here:** `chat.py`'s LLM writes a SQL `SELECT`
+  against a `data_products` table (mirroring the DataHub catalog, kept in
+  sync via `wrenai_client.sync_catalog()`) using the field names declared
+  in the semantic model (`wren/project/models/data_products/metadata.yml`).
+  WrenAI's governed engine (`strict_mode`) executes it and structurally
+  cannot return a row that doesn't exist — this is the actual
+  zero-hallucination mechanism, not WrenAI generating SQL for us. This is
+  layered *on top of* the existing prompt-instructed/substring-matching
+  approach in `chat.py`, which now only serves as the fallback when this
+  integration itself fails (LLM unreachable for the SQL-writing call,
+  WrenAI/MDL unavailable, etc.) — see `resolve_via_semantic_layer()`.
+- **Deliberately out of scope:** this only answers "which data subject
+  matches this need" for the user to then select (same cart/ticket/
+  approval flow as before) — it does **not** execute analytical queries
+  against the real underlying business databases to hand back actual
+  numbers. That's a distinct, larger decision (whether such queries
+  should be gated by this app's approval workflow or not) that hasn't
+  been made — don't expand this integration's scope to real query
+  execution without that decision being made explicitly first.
+- **One WrenAI project = one physical data source, full stop** (confirmed
+  via the PoC's testing) — it can't join across the different databases
+  the DataHub catalog's entries actually live in (see each mock entry's
+  `db_host`/`db_type`, e.g. Postgres vs Oracle, different hosts even
+  within Postgres). That's exactly why this models *our own Postgres
+  mirror of the catalog*, not the underlying business databases.
+- **Docker build note:** `wrenai`'s Rust engine (`wren-core-py`) has a
+  prebuilt wheel for **linux/amd64** and macOS but **not linux/aarch64**
+  (confirmed via PyPI's file listing for `wren-core-py` 0.7.2) — build/
+  ship the backend image targeting `linux/amd64` to avoid needing a Rust
+  toolchain + crates.io access during the Docker build (a fourth
+  air-gapped-network landmine beyond PyPI/npm/Docker Hub, on top of
+  everything already documented above about building at home). See the
+  comment in `backend/Dockerfile`.
+- **Not yet verified:** this has been smoke-tested locally (a real
+  `wren context build` + governed query against a throwaway DuckDB table,
+  outside this repo) and the existing pytest suite covers `sync_catalog()`
+  and the fallback-on-failure behavior, but it has **not** been run
+  end-to-end inside this repo's actual `docker compose up --build` yet
+  (i.e. `backend/entrypoint.sh`'s `wren profile add` + `wren context
+  build` against the real backend Postgres, then a real governed query
+  through the running container). Do that before considering this done.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type
@@ -213,10 +273,11 @@ knows exactly where things stand:
   the process: an unused, incorrectly-typed `get_session()` function in
   `db.py` was dead code (removed, not fixed - nothing called it) and a
   nested-`with` simplification in `llm_client.py`.
-- Backend: a real pytest suite exists now (`backend/tests/`, 36 tests,
-  see `backend/README.md` for how to run it) covering `chat.py`
-  (greetings, LLM success/failure streaming, local fallback matching),
-  the full ticket/approval API and state machine, and both integration
+- Backend: a real pytest suite exists now (`backend/tests/`, 42 tests as
+  of the WrenAI addition, see `backend/README.md` for how to run it)
+  covering `chat.py` (greetings, LLM success/failure streaming, local
+  fallback matching, the semantic-layer verification/fallback chain), the
+  full ticket/approval API and state machine, and all three integration
   clients' fallback behavior. **This caught two real bugs no amount of
   my manual curl/Playwright testing had surfaced:**
   1. `submit_approval`'s cycle-time calculation crashed

@@ -15,8 +15,10 @@ things left off.
 - The two repos are **intentionally separate, no shared code**.
 - Stack: FastAPI + PostgreSQL backend, React + Vite frontend, real
   Camunda (pyzeebe/gRPC) and DataHub (GraphQL) integrations with
-  graceful fallback to mocks on failure.
-- Backend: `ruff` + `mypy` clean, 36 pytest tests. Frontend: `oxlint`
+  graceful fallback to mocks on failure, plus WrenAI (embedded Python
+  library, not a service - see HANDOFF.md) as a zero-hallucination
+  semantic layer for chat.py's data-subject matching.
+- Backend: `ruff` + `mypy` clean, 42 pytest tests. Frontend: `oxlint`
   clean, 29 vitest tests. Both suites pass.
 - CI: intentionally NOT GitHub Actions — company uses internal Azure
   DevOps for CI/CD. Don't build `.github/workflows/`.

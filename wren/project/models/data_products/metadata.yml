@@ -1,0 +1,48 @@
+name: data_products
+table_reference:
+  schema: public
+  table: data_products
+columns:
+  - name: id
+    type: varchar
+    properties:
+      display_name: 目錄代碼
+      description: >
+        This app's cart/ticket product id (a slug). Always select this
+        column so results can be mapped back to a catalog entry.
+  - name: name
+    type: varchar
+    properties:
+      display_name: 資料主體名稱
+  - name: description
+    type: varchar
+    properties:
+      display_name: 業務描述
+  - name: owner
+    type: varchar
+    properties:
+      display_name: 資料負責人
+  - name: maturity_level
+    type: varchar
+    properties:
+      display_name: 成熟度等級
+  - name: data_quality_score
+    type: varchar
+    properties:
+      display_name: 資料品質分數
+  - name: frequency
+    type: varchar
+    properties:
+      display_name: 更新頻率
+  - name: tables_joined
+    type: varchar
+    properties:
+      display_name: 關聯資料表
+  - name: db_type
+    type: varchar
+  - name: db_host
+    type: varchar
+  - name: db_port
+    type: varchar
+  - name: db_schema
+    type: varchar

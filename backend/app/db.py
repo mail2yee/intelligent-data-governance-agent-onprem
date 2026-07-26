@@ -40,6 +40,31 @@ class Approval(Base):
     ticket: Mapped["Ticket"] = relationship(back_populates="approvals")
 
 
+class DataProduct(Base):
+    """Mirror of the DataHub catalog, kept in our own Postgres so WrenAI's
+    governed engine has a real table to validate/execute agent-written SQL
+    against (see integrations/wrenai_client.py) - WrenAI needs a live
+    connected data source, it can't validate against a Python dict.
+    Repopulated from datahub_client.get_catalog() on each chat request
+    (see chat.py), not treated as its own source of truth.
+    """
+
+    __tablename__ = "data_products"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(String)
+    owner: Mapped[str] = mapped_column(String)
+    maturity_level: Mapped[str] = mapped_column(String)
+    data_quality_score: Mapped[str] = mapped_column(String)
+    frequency: Mapped[str] = mapped_column(String)
+    tables_joined: Mapped[str] = mapped_column(String)
+    db_type: Mapped[str] = mapped_column(String)
+    db_host: Mapped[str] = mapped_column(String)
+    db_port: Mapped[str] = mapped_column(String)
+    db_schema: Mapped[str] = mapped_column(String)
+
+
 engine = create_async_engine(settings.database_url, echo=False)
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 

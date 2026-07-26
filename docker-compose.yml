@@ -26,11 +26,23 @@ services:
     # network, `docker compose pull && docker compose up` (no --build)
     # just pulls this image - no pip install / PyPI access needed there.
     image: ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-backend:latest
-    build: ./backend
+    # Build context is the repo root, not ./backend, so the Dockerfile can
+    # also COPY ../wren/project (the WrenAI semantic model) - see
+    # backend/Dockerfile and app/integrations/wrenai_client.py.
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     env_file:
       - ./backend/.env
     environment:
       DATABASE_URL: postgresql+asyncpg://dgo:${POSTGRES_PASSWORD:-dgo}@postgres:5432/dgo
+      # Read by wren/project/connection_profile.json at container startup
+      # (backend/entrypoint.sh's `wren profile add`) - WrenAI needs its
+      # own host/user/password/database fields, not just a DSN string.
+      POSTGRES_USER: dgo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dgo}
+      POSTGRES_DB: dgo
+      WREN_PROJECT_PATH: /app/wren_project
     ports:
       - "8000:8000"
     depends_on:
