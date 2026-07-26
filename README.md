@@ -50,6 +50,38 @@ the TODO comments in both Dockerfiles. If there isn't one, build images
 somewhere with internet access and get them into the internal registry
 some other way, rather than `docker build` on-site.
 
+### Testing the "build at home, run at office" path via GHCR
+
+`docker-compose.yml` sets both `image:` and `build:` on the `backend` and
+`frontend` services, pointing at `ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`.
+This is a first attempt at a registry the company network might reach
+without needing an internal mirror at all, since GitHub itself is
+reachable from inside — **unconfirmed whether `ghcr.io` specifically is
+allowed through the firewall, that's what this is testing.**
+
+At home (internet access):
+```bash
+docker compose build
+docker login ghcr.io -u mail2yee   # personal access token with write:packages, as the password
+docker compose push
+```
+The pushed packages need to be flipped to **public** once in GitHub's
+package settings (GHCR defaults new packages to private even though this
+repo is private) — done as a deliberate choice for the testing phase, so
+the office side needs no `docker login`/PAT at all. Revisit before any
+real rollout: switch back to private once this is confirmed to work, and
+handle the PAT at the office properly at that point.
+
+At the office (no internet, testing whether `ghcr.io` is reachable):
+```bash
+git pull
+docker compose pull
+docker compose up
+```
+If `docker compose pull` fails to resolve/connect to `ghcr.io`, that
+confirms the internal Docker registry mirror is the only viable path and
+this GHCR approach should be dropped.
+
 ## Repo layout
 
 ```

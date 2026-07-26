@@ -20,6 +20,12 @@ services:
       retries: 10
 
   backend:
+    # image + build both set on purpose: `docker compose build` (at home,
+    # with internet access) tags the result as this ghcr.io name, then
+    # `docker compose push` publishes it. On the (air-gapped) company
+    # network, `docker compose pull && docker compose up` (no --build)
+    # just pulls this image - no pip install / PyPI access needed there.
+    image: ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-backend:latest
     build: ./backend
     env_file:
       - ./backend/.env
@@ -32,6 +38,7 @@ services:
         condition: service_healthy
 
   frontend:
+    image: ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-frontend:latest
     build: ./frontend
     ports:
       - "8080:80"

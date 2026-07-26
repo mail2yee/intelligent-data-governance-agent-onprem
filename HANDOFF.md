@@ -23,6 +23,18 @@ decisions across manually; do not try to build a compatibility layer.
   internal registry, or `docker save`/`docker load`), not inside the
   company network. Confirm this before assuming `docker build` can run
   on-site.
+- **Testing a second path (2026-07-27):** `docker-compose.yml` now also
+  sets `image:` on `backend`/`frontend` pointing at
+  `ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`,
+  so the workflow can be "build+push at home, `docker compose pull` at
+  the office" instead of relying on the internal registry. The packages
+  are being made **public** on GHCR deliberately for this test (repo
+  stays private) so the office side needs no GitHub PAT/login — revisit
+  and switch back to private once this is confirmed working, and figure
+  out PAT handling at the office at that point. Whether the office
+  firewall even lets `ghcr.io` through (distinct host from `github.com`)
+  is **unconfirmed** — that's exactly what's being tested. See README.md
+  "Testing the build at home, run at office path via GHCR".
 - Runtime target is eventually Kubernetes; Docker (docker-compose) is
   what's usable right now. The `k8s/` folder is a placeholder — don't
   build it out until asked.
