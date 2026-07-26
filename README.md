@@ -20,7 +20,7 @@ Camunda), and what business logic / UI direction to carry over.
 
 **程式碼在哪裡：** 後端邏輯全在 `backend/app/`——`main.py` 是所有 HTTP 路由和票單/簽核狀態機，`chat.py` 是聊天助理（打招呼快速回覆、zero-hallucination 提示詞、LLM 打不通時的本地關鍵字 fallback），`config.py` 集中管理所有環境變數，`db.py` 是資料庫 model，`integrations/` 底下三個檔案分別對應 LLM/Camunda/DataHub 三個外部串接。前端在 `frontend/src/`——`App.jsx` 管全域狀態，`api.js` 是所有後端呼叫（含手刻的 SSE 串流解析），`i18n.js` 管中英文字串，`components/` 底下一個檔案一個 UI 元件。完整逐檔案說明見下面「Code map」章節。
 
-**怎麼跑起來 / 公司內網部署策略：** 本機（家裡）直接 `docker compose up --build` 就能跑。公司內網因為連不到 PyPI/npm，第一步應該先直接在公司試同一條指令——如果內網本身有設定 registry mirror 可能就直接通了；如果 `pip install`/`npm ci` 卡住，才需要退回「家裡先 build 好 image，想辦法弄進公司內網」這條路（走內部 registry 或測試中的 GHCR 方案）。完整決策流程、指令、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
+**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗）——裡面預設值是假的 LLM/Camunda/DataHub 端點，先用預設值就能跑起來看 fallback 行為，之後知道真實內網端點再回來改。接著本機（家裡）直接 `docker compose up --build` 就能跑。公司內網因為連不到 PyPI/npm，第一步應該先直接在公司試同一條指令——如果內網本身有設定 registry mirror 可能就直接通了；如果 `pip install`/`npm ci` 卡住，才需要退回「家裡先 build 好 image，想辦法弄進公司內網」這條路（走內部 registry 或測試中的 GHCR 方案）。完整決策流程、指令、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
 
 ## Status: full PoC UI ported, verified end-to-end
 
@@ -197,6 +197,20 @@ just the *where*.
 
 ## Run it locally (dev, at home)
 
+**Configuration (required once, before the first run):**
+```bash
+cp backend/.env.example backend/.env   # required - docker-compose.yml
+                                        # references this file directly; it
+                                        # won't even start without it existing
+cp .env.example .env                   # optional - only needed to override
+                                        # the default Postgres password
+```
+`backend/.env`'s defaults (mock LLM/Camunda/DataHub endpoints) are enough
+to start the app and see it fall back gracefully everywhere — edit it
+with the real on-prem endpoints (`LLM_BASE_URL`, `CAMUNDA_GATEWAY_ADDRESS`,
+`DATAHUB_API_URL`, etc.) once those are known. See the comments in
+`backend/.env.example` for what each variable does.
+
 ```bash
 docker compose up --build
 ```
@@ -206,7 +220,8 @@ docker compose up --build
 - Postgres: localhost:5432 (user/pass/db: `dgo`/`dgo`/`dgo`)
 
 Or run backend/frontend separately without Docker — see
-`backend/README.md` and `frontend/README.md`.
+`backend/README.md` and `frontend/README.md` (same `backend/.env` config
+step applies there too).
 
 ## Repo layout
 
