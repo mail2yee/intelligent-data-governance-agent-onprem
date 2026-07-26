@@ -1,0 +1,111 @@
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  height: 56px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.topbar .mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 14px;
+}
+.topbar .title {
+  font-size: 16px;
+  font-weight: 500;
+}
+.topbar .env-chip {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--warning);
+  background: var(--warning-tint);
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+.topbar .spacer {
+  flex: 1;
+}
+.topbar .status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.topbar .status .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.topbar .status .dot.ok {
+  background: var(--success);
+}
+.topbar .status .dot.down {
+  background: var(--critical);
+}
+
+.main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 32px 24px 64px;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+.product-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: var(--shadow-1);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.product-card .pid {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.product-card h3 {
+  font-size: 14.5px;
+  font-weight: 500;
+  margin: 2px 0 0;
+}
+.product-card p {
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  margin: 0;
+  line-height: 1.55;
+}
+.maturity-chip {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  align-self: flex-start;
+  background: var(--warning-tint);
+  color: var(--warning);
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 36px 20px;
+}
