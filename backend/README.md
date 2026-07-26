@@ -21,10 +21,11 @@ app itself will still start.
 
 ## What's implemented vs. stubbed
 
-- `/health`, `/api/catalog` (falls back to a hardcoded mock catalog),
-  `/api/chat` (SSE streaming, ported greeting/zero-hallucination/bilingual
-  logic from the PoC), `/api/tickets*` (real Postgres persistence, real
-  approval state machine) — **implemented**.
+- `/health`, `/api/catalog`, `/api/catalog/{id}/connection` (falls back to
+  a hardcoded mock catalog), `/api/chat` (SSE streaming, ported
+  greeting/zero-hallucination/bilingual logic from the PoC, plus a local
+  keyword-match fallback if the LLM call fails), `/api/tickets*` (real
+  Postgres persistence, real approval state machine) — **implemented**.
 - LLM call (`app/integrations/llm_client.py`) — implemented against an
   **assumed** OpenAI-compatible endpoint shape. Unconfirmed against the
   real on-prem model gateway.
@@ -40,6 +41,7 @@ app itself will still start.
 |---|---|---|
 | GET | `/health` | liveness check |
 | GET | `/api/catalog` | data subjects (DataHub, currently mocked) |
+| GET | `/api/catalog/{id}/connection` | db_type/host/port/schema for the "connection code" UI feature |
 | POST | `/api/chat` | SSE stream: `step` / `token` / `final` events. Body: `{message, lang}` |
 | POST | `/api/tickets` | create a ticket. Body: `{products, objective, purpose}` |
 | GET | `/api/tickets` | list tickets, newest first |

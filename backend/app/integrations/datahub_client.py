@@ -6,9 +6,14 @@ URL and an auth token (DATAHUB_API_URL / DATAHUB_API_TOKEN in .env are
 placeholders). DataHub's GraphQL API is the usual way to pull dataset
 metadata (name, description, owners, glossary terms, etc.) - map that
 response shape onto the fields the frontend expects (see the
-`_id`/`name`/`description`/`owner`/`maturity_level`/`data_quality_score`/
+`id`/`name`/`description`/`owner`/`maturity_level`/`data_quality_score`/
 `frequency`/`tables_joined` fields used below and by the GCP PoC's
 LOCAL_CATALOG, which this mock mirrors).
+
+The db_type/db_host/db_port/db_schema fields back the "connection code"
+feature in the UI (a generated Python/Java snippet showing how to reach
+the underlying database) - DataHub can supply these too, typically via
+a custom dataset property or a linked "Data Platform Instance".
 
 Until this is wired, `get_catalog()` returns this same hardcoded mock
 data so the rest of the app (search, cards, tickets) has something real
@@ -25,6 +30,10 @@ MOCK_CATALOG = {
         "data_quality_score": "98%",
         "frequency": "HOURLY",
         "tables_joined": "wip_moves, tool_bottleneck, dispatch_schedule",
+        "db_type": "PostgreSQL",
+        "db_host": "fab-ops-postgres.corp.internal",
+        "db_port": "5432",
+        "db_schema": "production_forecast",
     },
     "customer-demand-orders": {
         "id": "customer-demand-orders",
@@ -35,6 +44,10 @@ MOCK_CATALOG = {
         "data_quality_score": "92%",
         "frequency": "DAILY",
         "tables_joined": "customer_po, global_demand_forecast, sales_backlog",
+        "db_type": "Oracle",
+        "db_host": "sales-oracle-cluster.corp.internal",
+        "db_port": "1521",
+        "db_schema": "global_orders",
     },
     "customer-capacity-allocation": {
         "id": "customer-capacity-allocation",
@@ -45,6 +58,10 @@ MOCK_CATALOG = {
         "data_quality_score": "99%",
         "frequency": "DAILY",
         "tables_joined": "capacity_plan, customer_commitment, wafer_start_actuals",
+        "db_type": "PostgreSQL",
+        "db_host": "capacity-postgres.corp.internal",
+        "db_port": "5432",
+        "db_schema": "capacity_mgmt",
     },
 }
 

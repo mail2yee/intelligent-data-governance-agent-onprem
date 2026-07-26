@@ -125,14 +125,32 @@ direction; don't relitigate it, port it:
   Platform" partway through the PoC — matches this repo's name).
 
 The GCP PoC repo has a fully working reference implementation of all of
-this in plain HTML/CSS/JS (`app/main.py`'s `index()` route) — read it for
-exact copy, exact CSS values, and exact interaction behavior when
-building the React version, rather than re-deriving the design from this
-summary alone.
+this in plain HTML/CSS/JS (`app/main.py`'s `index()` route) — it's what
+the React port here was built from (same class names on purpose, to keep
+future diffs against it readable).
 
 ## What's actually in this repo right now
 
-Scaffolding only — a skeleton that's structured correctly and (once
-`.env` is filled in and `docker compose up` is run) should boot, but the
-integrations are stubs and the frontend is not yet a port of the PoC's
-UI. See each side's own README for what's implemented vs. TODO.
+**The full PoC UI has been ported to React** (Discover search with live
+SSE streaming, Approvals list with SLA tracking, cart/submit dialog,
+connection-code dialog, Copilot dock, zh/en toggle, light/dark toggle,
+collapsible nav) and verified end-to-end against the real backend +
+Postgres + Playwright (search → cart → submit → approve/reject →
+i18n/theme toggles → copilot), zero console errors. See
+`frontend/src/components/` — one file per UI piece, `frontend/src/api.js`
+for the backend calls, `frontend/src/i18n.js` for translations.
+
+Backend gained one thing beyond the original scaffold while wiring the
+port up: `run_chat()` now falls back to a local keyword-match
+(`local_rule_match()` in `backend/app/chat.py`) when the LLM call fails,
+instead of just showing an error — mirrors the PoC's local-dev
+convenience, and also just makes the app degrade gracefully if the LLM
+gateway is ever briefly unreachable in real use. It only knows the mock
+catalog's 3 entries; revisit once DataHub is wired with real catalog
+contents.
+
+Still stubbed / not done: Camunda and DataHub are still stubs (see their
+docstrings), the LLM client's OpenAI-compatible assumption is still
+unconfirmed against the real on-prem gateway, and the "目錄維護"/Catalog
+Admin nav item is still a disabled placeholder (was in the PoC too — no
+catalog editing UI ever existed there either).

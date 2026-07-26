@@ -62,6 +62,39 @@ def build_prompt(user_msg: str, lang: str, catalog: dict) -> str:
     """
 
 
+# Crude keyword-to-product map used only when the LLM gateway is
+# unreachable, so the app degrades gracefully instead of just erroring
+# out - not a substitute for the real LLM grounding (see HANDOFF.md).
+# Chinese has no whitespace between words, so generic tokenization
+# doesn't work here; this mirrors the GCP PoC's proven approach of
+# matching known keyword phrases per catalog entry directly. It only
+# knows about the mock catalog's 3 entries - once DataHub is wired with
+# real, varied catalog contents, this fallback should either be reworked
+# to something more generic or dropped in favor of always requiring a
+# working LLM.
+LOCAL_MATCH_KEYWORDS = {
+    "customer-capacity-allocation": ["產能", "分配", "capacity", "allocation"],
+    "move-forecast-summary": ["move", "出貨", "預估", "shipment", "forecast"],
+    "customer-demand-orders": ["訂單", "order", "demand"],
+}
+
+
+def local_rule_match(user_msg: str, lang: str, catalog: dict) -> tuple[list[str], str]:
+    msg_lower = user_msg.lower()
+    for product_id, keywords in LOCAL_MATCH_KEYWORDS.items():
+        item = catalog.get(product_id)
+        if not item:
+            continue
+        if any(k.lower() in msg_lower for k in keywords):
+            reply = (
+                f"💡 我為您找到了 <b>{item['name']}</b>（{item.get('maturity_level', '')} 級，品質分 {item.get('data_quality_score', '')}）。"
+                if lang == "zh"
+                else f"💡 I found <b>{item['name']}</b> ({item.get('maturity_level', '')}-certified, quality score {item.get('data_quality_score', '')})."
+            )
+            return [product_id], reply
+    return [], NOT_FOUND_REPLY[lang]
+
+
 async def run_chat(user_msg: str, lang: str, catalog: dict) -> AsyncIterator[str]:
     """Async generator of SSE event strings - step / token / final."""
     thinking_steps: list[str] = []
@@ -100,8 +133,10 @@ async def run_chat(user_msg: str, lang: str, catalog: dict) -> AsyncIterator[str
         else:
             yield step(f"🏁 任務規劃與執行完畢，推薦：{json.dumps(matched_products)}")
     except Exception as e:
-        reply = f"LLM 呼叫失敗：{e}" if lang == "zh" else f"LLM call failed: {e}"
+        yield step(f"⚠️ LLM 無法連線（{e}），降級至本地關鍵字比對。" if lang == "zh" else f"⚠️ LLM unreachable ({e}), falling back to local keyword matching.")
+        matched_products, reply = local_rule_match(user_msg, lang, catalog)
         yield sse_event("token", text=reply)
-        yield step(f"❌ 錯誤: {e}")
+        if not matched_products:
+            yield step("⚠️ 判定此需求與資料目錄無關，已啟動 Zero Hallucination 攔截。")
 
     yield sse_event("final", reply=reply, matched_products=matched_products, thinking_steps=thinking_steps)

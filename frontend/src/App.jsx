@@ -1,59 +1,142 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
+import { createTicket, getCatalog, getTickets, submitApproval } from './api'
+import ApprovalsView from './components/ApprovalsView'
+import CartBar from './components/CartBar'
+import ConnectionCodeDialog from './components/ConnectionCodeDialog'
+import CopilotDock from './components/CopilotDock'
+import DiscoverView from './components/DiscoverView'
+import NavRail from './components/NavRail'
+import SubmitDialog from './components/SubmitDialog'
+import Toast from './components/Toast'
+import TopBar from './components/TopBar'
+import { makeT } from './i18n'
 
-// This is a connectivity-proving skeleton, not a port of the PoC's full
-// UI yet - see HANDOFF.md "UI/UX direction" for what the real Discover /
-// Approvals / Copilot screens should look like when built out.
 function App() {
-  const [health, setHealth] = useState('checking')
-  const [catalog, setCatalog] = useState(null)
-  const [error, setError] = useState(null)
+  const [lang, setLang] = useState('zh')
+  const [theme, setTheme] = useState('light')
+  const [view, setView] = useState('discover')
+  const [catalog, setCatalog] = useState({})
+  const [cart, setCart] = useState([])
+  const [tickets, setTickets] = useState([])
+  const [submitOpen, setSubmitOpen] = useState(false)
+  const [codeProductId, setCodeProductId] = useState(null)
+  const [toast, setToast] = useState({ message: '', visible: false })
+  const toastTimer = useRef(null)
+
+  const t = makeT(lang)
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', 'light')
-  }, [])
+    document.documentElement.setAttribute('data-theme', theme)
+  }, [theme])
 
   useEffect(() => {
-    fetch('/health')
-      .then((res) => (res.ok ? setHealth('ok') : setHealth('down')))
-      .catch(() => setHealth('down'))
+    document.documentElement.lang = lang === 'zh' ? 'zh-Hant' : 'en'
+  }, [lang])
 
-    fetch('/api/catalog')
-      .then((res) => res.json())
-      .then((data) => setCatalog(data))
-      .catch((e) => setError(String(e)))
+  useEffect(() => {
+    getCatalog()
+      .then(setCatalog)
+      .catch((e) => console.error('[DGO] getCatalog failed:', e))
+    refreshTickets()
   }, [])
 
-  const products = catalog ? Object.values(catalog) : []
+  function refreshTickets() {
+    getTickets()
+      .then((data) => {
+        setTickets(data)
+        console.log('[DGO] loadTickets:', data.length, 'ticket(s)')
+      })
+      .catch((e) => {
+        console.error('[DGO] loadTickets failed:', e)
+        setTickets([])
+      })
+  }
+
+  function changeView(next) {
+    setView(next)
+    if (next === 'approvals') refreshTickets()
+  }
+
+  function showToast(message) {
+    setToast({ message, visible: true })
+    clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast((s) => ({ ...s, visible: false })), 3200)
+  }
+
+  function toggleCart(id) {
+    setCart((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+      console.log('[DGO] cart ->', next)
+      return next
+    })
+  }
+
+  async function handleSubmitTicket(objective, purpose) {
+    try {
+      const data = await createTicket({ products: cart, objective, purpose })
+      console.log('[DGO] create-ticket response:', data)
+      setCart([])
+      setSubmitOpen(false)
+      showToast(t('toastSubmitted')(data.ticket_id))
+      refreshTickets()
+    } catch (e) {
+      console.error('[DGO] create-ticket failed:', e)
+      showToast(t('toastFailed'))
+    }
+  }
+
+  async function handleApprove(ticketId, email, decision, reason) {
+    console.log('[DGO] submit-approval:', ticketId, email, decision)
+    try {
+      await submitApproval(ticketId, { owner_email: email, decision, reason })
+    } catch (e) {
+      console.error('[DGO] submit-approval failed:', e)
+      showToast(t('toastFailed'))
+    }
+    refreshTickets()
+  }
+
+  const pendingCount = tickets.filter((tk) => tk.status === 'PENDING_APPROVAL').length
 
   return (
-    <div>
-      <header className="topbar">
-        <div className="mark">DG</div>
-        <div className="title">智慧資料治理平台</div>
-        <span className="env-chip">On-Prem Scaffold</span>
-        <div className="spacer"></div>
-        <div className="status">
-          <span className={`dot ${health === 'ok' ? 'ok' : 'down'}`}></span>
-          backend: {health}
-        </div>
-      </header>
+    <div className="shell">
+      <TopBar
+        t={t}
+        lang={lang}
+        onToggleLang={() => setLang((l) => (l === 'zh' ? 'en' : 'zh'))}
+        theme={theme}
+        onToggleTheme={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
+      />
+
+      <NavRail t={t} view={view} onChangeView={changeView} pendingCount={pendingCount} />
 
       <main className="main">
-        <h1 style={{ fontSize: 20, fontWeight: 500 }}>資料目錄（來自後端 /api/catalog）</h1>
-        {error && <div className="empty-state">連線失敗：{error}</div>}
-        {!error && products.length === 0 && <div className="empty-state">載入中…</div>}
-        <div className="card-grid">
-          {products.map((p) => (
-            <div className="product-card" key={p.id}>
-              <div className="pid mono">{p.id}</div>
-              <h3>{p.name}</h3>
-              <span className="maturity-chip">{p.maturity_level}</span>
-              <p>{p.description}</p>
-            </div>
-          ))}
-        </div>
+        {view === 'discover' && (
+          <DiscoverView t={t} lang={lang} catalog={catalog} cart={cart} onToggleCart={toggleCart} />
+        )}
+        {view === 'approvals' && (
+          <ApprovalsView t={t} tickets={tickets} onApprove={handleApprove} onShowCode={setCodeProductId} />
+        )}
       </main>
+
+      <CartBar t={t} cart={cart} onReview={() => setSubmitOpen(true)} />
+
+      <CopilotDock t={t} lang={lang} />
+
+      <SubmitDialog
+        t={t}
+        open={submitOpen}
+        cart={cart}
+        catalog={catalog}
+        onCancel={() => setSubmitOpen(false)}
+        onRemove={toggleCart}
+        onSubmit={handleSubmitTicket}
+      />
+
+      <ConnectionCodeDialog t={t} productId={codeProductId} onClose={() => setCodeProductId(null)} />
+
+      <Toast message={toast.message} visible={toast.visible} />
     </div>
   )
 }

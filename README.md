@@ -6,18 +6,21 @@ separate repo from the GCP PoC, what's swapped (Gemini → on-prem LLM,
 Firestore → PostgreSQL, Dataplex → DataHub, Camunda SaaS → self-managed
 Camunda), and what business logic / UI direction to carry over.
 
-## Status: scaffold, verified end-to-end
-
-Not a feature port yet — a skeleton verified to actually run:
+## Status: full PoC UI ported, verified end-to-end
 
 - Backend (FastAPI + PostgreSQL) tested end-to-end against a real
   Postgres: catalog fetch, SSE chat streaming (greeting fast-path,
-  zero-hallucination guard, graceful failure when the LLM endpoint isn't
-  reachable), ticket create/list, and the full approve/reject state
-  machine (including SLA cycle-time tracking).
-- Frontend (React + Vite) verified to actually fetch from the backend
-  through the dev proxy and render live data, using the design tokens
-  ported from the PoC.
+  zero-hallucination guard, local-keyword fallback when the LLM endpoint
+  isn't reachable instead of just erroring out), ticket create/list, and
+  the full approve/reject state machine (including SLA cycle-time
+  tracking).
+- Frontend (React + Vite) is a full port of the GCP PoC's UI: Discover
+  search with live SSE streaming (reasoning steps + answer text appear
+  as they happen, not after one big wait), Approvals list with SLA
+  highlighting, cart + submit dialog, connection-code dialog, Copilot
+  dock, zh/en toggle, light/dark toggle (light by default regardless of
+  OS preference), collapsible nav rail. Verified via a full Playwright
+  run through every flow against the real backend — zero console errors.
 - Camunda and DataHub integrations are **stubs** — see their docstrings
   in `backend/app/integrations/` for exactly what's needed before they're
   real.

@@ -18,16 +18,24 @@ needed for local dev.
 
 ## What's actually here right now
 
-A connectivity-proving skeleton (`src/App.jsx`), not a port of the PoC's
-Discover / Approvals / Copilot screens yet:
+A full port of the PoC's UI, verified working end-to-end against the
+real backend (see the root README's status section):
 
-- Design tokens (`src/index.css`) ported from the PoC (light-by-default
-  theme, Google Blue accent, etc.)
-- A minimal shell that fetches `/health` and `/api/catalog` and renders
-  the catalog as cards, to prove the whole pipeline (React -> proxy ->
-  FastAPI -> DataHub-stub) actually works.
+- `src/index.css` — design tokens (light-by-default theme, Google Blue
+  accent, dark variant).
+- `src/App.css` — everything else, ported class-for-class from the PoC's
+  `<style>` block, so diffing against it stays easy.
+- `src/i18n.js` — zh/en translation dictionary (ported verbatim).
+- `src/api.js` — backend calls, including `streamChat()`, the SSE
+  consumer for `/api/chat` (reads `step`/`token`/`final` events and
+  renders progressively rather than waiting for one response).
+- `src/components/` — one file per UI piece: `TopBar`, `NavRail`
+  (collapsible groups), `DiscoverView` (search + live streaming +
+  reasoning-steps disclosure), `ProductCard`, `ApprovalsView` (SLA strip
+  + ticket list), `TicketRow` (expandable, approve/reject), `CartBar`,
+  `SubmitDialog`, `ConnectionCodeDialog`, `CopilotDock`, `Toast`.
+- `src/App.jsx` — top-level state (lang, theme, cart, catalog, tickets,
+  dialogs) and wiring between components.
 
-Next real work: build out the Discover search (with the SSE streaming
-consumption pattern - see the PoC's `streamChat()` for the exact event
-shapes: `step`/`token`/`final`), the Approvals list, cart/submit flow,
-and the Copilot dock, as React components using these same tokens.
+Not built: the "目錄維護"/Catalog Admin screen (was a disabled
+placeholder in the PoC too, no design exists for it yet).

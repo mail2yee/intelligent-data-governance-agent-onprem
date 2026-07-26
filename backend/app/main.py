@@ -45,6 +45,20 @@ async def get_catalog():
     return await datahub_client.get_catalog()
 
 
+@app.get("/api/catalog/{product_id}/connection")
+async def get_connection_meta(product_id: str):
+    catalog = await datahub_client.get_catalog()
+    item = catalog.get(product_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="unknown product_id")
+    return {
+        "db_type": item.get("db_type", ""),
+        "db_host": item.get("db_host", ""),
+        "db_port": item.get("db_port", ""),
+        "db_schema": item.get("db_schema", ""),
+    }
+
+
 @app.post("/api/chat")
 async def chat(request: Request):
     payload = await request.json()

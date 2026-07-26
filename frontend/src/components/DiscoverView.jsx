@@ -1,0 +1,148 @@
+import { useState } from 'react'
+import { streamChat } from '../api'
+import ProductCard from './ProductCard'
+import ThinkingDots from './ThinkingDots'
+
+const CHIPS = [
+  { key: 'chip1', qZh: '特定客戶產能與生產 Move 預估', qEn: 'specific customer capacity and production move forecast' },
+  { key: 'chip2', qZh: '全球客戶投片訂單與需求排程', qEn: 'global customer wafer order demand schedule' },
+  { key: 'chip3', qZh: '員工薪資查詢', qEn: 'employee salary lookup' },
+]
+
+export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
+  const [query, setQuery] = useState('')
+  const [phase, setPhase] = useState('idle') // idle | loading | done | error
+  const [note, setNote] = useState('')
+  const [hits, setHits] = useState([])
+  const [steps, setSteps] = useState([])
+  const [stepsOpen, setStepsOpen] = useState(false)
+  const [emptyMessage, setEmptyMessage] = useState('')
+
+  async function runSearch(q) {
+    if (!q.trim()) {
+      setPhase('idle')
+      return
+    }
+    console.log('[DGO] runSearch:', q)
+    setPhase('loading')
+    setNote('')
+    setHits([])
+    setSteps([])
+    setStepsOpen(true) // auto-expand live while steps are actually arriving
+    setEmptyMessage('')
+
+    let accumulated = ''
+    await streamChat(q, lang, {
+      onStep: (text) => setSteps((prev) => [...prev, text]),
+      onToken: (text) => {
+        accumulated += text
+        setNote(accumulated)
+      },
+      onFinal: (evt) => {
+        const matched = (evt.matched_products || []).filter((id) => catalog[id])
+        const finalReply = evt.reply || accumulated
+        if (matched.length === 0) {
+          setPhase('empty')
+          setEmptyMessage(finalReply || t('emptyState')(q))
+          setHits([])
+          return
+        }
+        setNote(finalReply)
+        setHits(matched)
+        setPhase('done')
+      },
+      onError: () => setPhase('error'),
+    })
+  }
+
+  return (
+    <section className="view active">
+      <div className="search-hero">
+        <h1>{t('discoverH1')}</h1>
+        <p className="lead" style={{ textAlign: 'center' }}>
+          {t('discoverLead')}
+        </p>
+        <div className="search-box">
+          <span>&#128269;</span>
+          <input
+            type="text"
+            placeholder={t('searchPlaceholder')}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') runSearch(query)
+            }}
+          />
+          <button type="button" onClick={() => runSearch(query)}>
+            {t('searchBtn')}
+          </button>
+        </div>
+        <div className="chips">
+          {CHIPS.map((c) => (
+            <button
+              key={c.key}
+              className="chip"
+              type="button"
+              onClick={() => {
+                const q = lang === 'zh' ? c.qZh : c.qEn
+                setQuery(q)
+                runSearch(q)
+              }}
+            >
+              {t(c.key)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {phase !== 'idle' && (
+        <div>
+          {(phase === 'done' || phase === 'loading') && note && (
+            <div className="assistant-note" dangerouslySetInnerHTML={{ __html: note }} />
+          )}
+
+          <p className="results-meta">
+            {phase === 'loading' && <ThinkingDots label={t('thinking')} />}
+            {phase === 'done' && t('resultsMeta')(hits.length)}
+          </p>
+
+          {steps.length > 0 && (
+            <div>
+              <button
+                className={`thinking-toggle${stepsOpen ? ' open' : ''}`}
+                type="button"
+                onClick={() => setStepsOpen((o) => !o)}
+              >
+                <span className="chev">&#9656;</span> {t('showThinking')}
+              </button>
+              <div className={`thinking-steps${stepsOpen ? ' open' : ''}`}>
+                {steps.map((s, i) => (
+                  <div className="step" key={i}>
+                    {s}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {phase === 'empty' && <div className="empty-state">{emptyMessage}</div>}
+          {phase === 'error' && <div className="empty-state">{t('toastFailed')}</div>}
+
+          {phase === 'done' && (
+            <div className="card-grid">
+              {hits.map((id) => (
+                <ProductCard
+                  key={id}
+                  product={catalog[id]}
+                  inCart={cart.includes(id)}
+                  onToggleCart={onToggleCart}
+                  t={t}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
