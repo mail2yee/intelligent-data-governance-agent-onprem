@@ -6,6 +6,22 @@ separate repo from the GCP PoC, what's swapped (Gemini → on-prem LLM,
 Firestore → PostgreSQL, Dataplex → DataHub, Camunda SaaS → self-managed
 Camunda), and what business logic / UI direction to carry over.
 
+## 中文說明
+
+這份 README 主要用英文寫，這一節是給不想切語言、想快速掌握全貌的中文摘要——細節（架構圖、逐檔案的 code map、部署步驟）都在下面對應的英文章節，這裡不重複貼一次圖，只講重點。
+
+**這是什麼：** GCP PoC（`data_governance_agent_poc.ai`，另一個 repo）的 on-prem 重建版，因為公司內網是氣隔離（air-gapped）——連得到 GitHub，但連不到 PyPI/npm/Docker Hub——原本 PoC 用的 Gemini/Firestore/Dataplex/Camunda SaaS 全部要換成內網可用的服務。兩個 repo **故意不共用程式碼**，重用的是行為/設計，不是檔案。細節在 `HANDOFF.md`。
+
+**技術堆疊：** 後端 FastAPI + PostgreSQL，前端 React + Vite，Camunda（用 `pyzeebe`/gRPC）跟 DataHub（GraphQL）都是真的串接（不是 mock），串不上時會 graceful fallback（例如查目錄失敗就退回內建的假目錄，LLM 打不通就退回本地關鍵字比對）。
+
+**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試；後端 36 個 pytest、前端 29 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。還沒確認的三件事：LLM gateway 是不是真的走 OpenAI-compatible 格式、Camunda 的 BPMN process 還沒部署、DataHub 的欄位對應（`customProperties`）還沒對到真實 instance 驗證過。
+
+**架構：** 三個 container 用 `docker-compose` 跑——`frontend`（nginx 提供 React 靜態檔，:8080）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 再讀寫 `postgres`（:5432），並對外打三個內網服務：LLM gateway、Camunda 的 Zeebe gRPC gateway、DataHub 的 GraphQL API——任何一個打不通都有 fallback，不會直接掛掉。完整圖見下面「Architecture」章節。
+
+**程式碼在哪裡：** 後端邏輯全在 `backend/app/`——`main.py` 是所有 HTTP 路由和票單/簽核狀態機，`chat.py` 是聊天助理（打招呼快速回覆、zero-hallucination 提示詞、LLM 打不通時的本地關鍵字 fallback），`config.py` 集中管理所有環境變數，`db.py` 是資料庫 model，`integrations/` 底下三個檔案分別對應 LLM/Camunda/DataHub 三個外部串接。前端在 `frontend/src/`——`App.jsx` 管全域狀態，`api.js` 是所有後端呼叫（含手刻的 SSE 串流解析），`i18n.js` 管中英文字串，`components/` 底下一個檔案一個 UI 元件。完整逐檔案說明見下面「Code map」章節。
+
+**怎麼跑起來 / 公司內網部署策略：** 本機（家裡）直接 `docker compose up --build` 就能跑。公司內網因為連不到 PyPI/npm，第一步應該先直接在公司試同一條指令——如果內網本身有設定 registry mirror 可能就直接通了；如果 `pip install`/`npm ci` 卡住，才需要退回「家裡先 build 好 image，想辦法弄進公司內網」這條路（走內部 registry 或測試中的 GHCR 方案）。完整決策流程、指令、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
+
 ## Status: full PoC UI ported, verified end-to-end
 
 - Backend (FastAPI + PostgreSQL) tested end-to-end against a real
