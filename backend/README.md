@@ -29,11 +29,17 @@ app itself will still start.
 - LLM call (`app/integrations/llm_client.py`) — implemented against an
   **assumed** OpenAI-compatible endpoint shape. Unconfirmed against the
   real on-prem model gateway.
-- Camunda (`app/integrations/camunda_client.py`) — **stub**, returns a
-  "not implemented" status. Needs gateway address + auth + a real
-  deployed process before this can do anything.
-- DataHub (`app/integrations/datahub_client.py`) — **stub**, returns
-  hardcoded mock data. Needs instance URL + token.
+- Camunda (`app/integrations/camunda_client.py`) — **real client**
+  (`pyzeebe`), defaults to an unauthenticated channel. Falls back to a
+  "Skipped" status if the gateway is unreachable or `CAMUNDA_PROCESS_ID`
+  (currently a placeholder — no process deployed yet) doesn't exist.
+  Optional OAuth path is implemented but untested against a live
+  Identity/Keycloak server.
+- DataHub (`app/integrations/datahub_client.py`) — **real client**
+  (GraphQL), falls back to a hardcoded mock catalog if unreachable.
+  Assumes extra fields (maturity_level, etc.) live as DataHub
+  customProperties — see the module docstring for exactly what's
+  confirmed vs. assumed about the schema shape.
 
 ## Routes
 

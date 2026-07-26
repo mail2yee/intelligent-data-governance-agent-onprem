@@ -37,8 +37,8 @@ decisions across manually; do not try to build a compatibility layer.
 | Concern | GCP PoC | This repo |
 |---|---|---|
 | LLM | Gemini via `google-genai`, streamed via SSE | On-prem model, assumed **OpenAI-compatible** `POST /v1/chat/completions` with `stream: true` (see `backend/app/integrations/llm_client.py`) — **unconfirmed**, adjust if the real endpoint shape differs |
-| Workflow engine | Camunda SaaS (`login.cloud.camunda.io`), fire-and-forget, not really wired to approval state | Camunda **self-managed** (on-prem) — intent is to actually drive the approval BPMN process this time, not simulate it (see `backend/app/integrations/camunda_client.py`) |
-| Data catalog | Dataplex (GCP) | DataHub API (see `backend/app/integrations/datahub_client.py`) — until this is wired, the app falls back to the same hardcoded `LOCAL_CATALOG` mock data as the GCP PoC |
+| Workflow engine | Camunda SaaS (`login.cloud.camunda.io`), fire-and-forget, not really wired to approval state | Camunda **self-managed** (on-prem), real `pyzeebe` client wired in (see `backend/app/integrations/camunda_client.py`) — but no BPMN process is deployed yet (confirmed with the user), so it currently fails gracefully every time until one exists. `CAMUNDA_PROCESS_ID` in `.env` is the only thing to change once it does. |
+| Data catalog | Dataplex (GCP) | DataHub GraphQL API, real client wired in (see `backend/app/integrations/datahub_client.py`) — assumes `maturity_level`/`data_quality_score`/etc. live as DataHub *customProperties* (confirmed assumption with the user) and derives each product's `id` by slugifying its DataHub display name. Falls back to the same hardcoded mock catalog as the GCP PoC if DataHub is unreachable or returns nothing. |
 | Ticket storage | Firestore | PostgreSQL (see `backend/app/db.py`) |
 | Semantic layer (NL -> structured query) | N/A | Not in scope for v1. WrenAI was mentioned as a possible future addition if DataHub metadata alone isn't enough for this — don't build anything for it yet |
 | Frontend | Single Python string containing HTML/CSS/JS, served by FastAPI | React (Vite) SPA, calling the FastAPI backend as a separate JSON/SSE API |
@@ -149,8 +149,35 @@ gateway is ever briefly unreachable in real use. It only knows the mock
 catalog's 3 entries; revisit once DataHub is wired with real catalog
 contents.
 
-Still stubbed / not done: Camunda and DataHub are still stubs (see their
-docstrings), the LLM client's OpenAI-compatible assumption is still
-unconfirmed against the real on-prem gateway, and the "目錄維護"/Catalog
-Admin nav item is still a disabled placeholder (was in the PoC too — no
-catalog editing UI ever existed there either).
+**Camunda and DataHub are now real, wired clients** (not mock stubs):
+`backend/app/integrations/camunda_client.py` uses `pyzeebe` to actually
+start a process instance; `backend/app/integrations/datahub_client.py`
+actually queries DataHub's GraphQL API. Confirmed against each project's
+own docs (endpoint paths, auth header shape, the pyzeebe channel/run_process
+call). Verified end-to-end that both correctly attempt a real
+connection and fail gracefully (falling back to the mock catalog / a
+"Skipped" ticket status) when nothing's listening yet — tested against
+real Postgres + a real (unreachable, as expected) gateway/endpoint, not
+just import-checked. What's still open, because it genuinely needs
+facts only reachable from inside the company network:
+- No BPMN process is deployed yet — `CAMUNDA_PROCESS_ID` in `.env` is a
+  placeholder. Deploy one, point `.env` at it, done — no code change.
+- Camunda auth defaults to unauthenticated (`create_insecure_channel`).
+  If it turns out Identity/Keycloak OAuth is required, the OAuth path in
+  `camunda_client.py` is implemented but **untested against a live
+  server** — pyzeebe's docs didn't confirm a purpose-built helper for
+  this, so it's built on core `grpc` primitives instead. Verify it once
+  real credentials exist.
+- DataHub field mapping assumes `maturity_level`/`data_quality_score`/etc.
+  live as DataHub *customProperties* (confirmed assumption with the
+  user) under `dataset.properties.customProperties` — the exact nesting
+  for the `Dataset` type specifically wasn't confirmable from the docs
+  fetched, only the general customProperties pattern across entity
+  types. Check the query in `datahub_client.py` against your instance's
+  GraphQL schema explorer (usually `{DATAHUB_API_URL}/api/graphiql`) and
+  adjust if it doesn't match.
+- LLM client's OpenAI-compatible assumption is still unconfirmed against
+  the real on-prem gateway.
+
+The "目錄維護"/Catalog Admin nav item is still a disabled placeholder
+(was in the PoC too — no catalog editing UI ever existed there either).

@@ -1,23 +1,80 @@
 """
-DataHub metadata catalog integration - STUB, not wired yet.
+DataHub metadata catalog integration.
 
-Need before implementing for real: the DataHub instance's GMS endpoint
-URL and an auth token (DATAHUB_API_URL / DATAHUB_API_TOKEN in .env are
-placeholders). DataHub's GraphQL API is the usual way to pull dataset
-metadata (name, description, owners, glossary terms, etc.) - map that
-response shape onto the fields the frontend expects (see the
-`id`/`name`/`description`/`owner`/`maturity_level`/`data_quality_score`/
-`frequency`/`tables_joined` fields used below and by the GCP PoC's
-LOCAL_CATALOG, which this mock mirrors).
+Confirmed against DataHub's own docs (docs.datahub.com):
+  - GraphQL endpoint: POST {DATAHUB_API_URL}/api/graphql
+  - Auth: personal access token as `Authorization: Bearer <token>`
+  - Free-text dataset search: `search(input: { type: DATASET, query: "...", ... })`
+  - Custom key/value properties on an entity: a `customProperties` field
+    returning a list of `{ key value }` entries (this pattern was
+    confirmed generically across entities; the exact nesting under the
+    `Dataset` type specifically - i.e. whether it's `dataset.properties.customProperties`
+    or `dataset.customProperties` directly - was NOT confirmed from the
+    docs available. The query below assumes `properties.customProperties`
+    (matching how `properties.name`/`properties.description` nest). If
+    your instance's schema differs, adjust the query below - test it in
+    your DataHub instance's GraphQL explorer (usually at
+    `{DATAHUB_API_URL}/api/graphiql`) first.
 
-The db_type/db_host/db_port/db_schema fields back the "connection code"
-feature in the UI (a generated Python/Java snippet showing how to reach
-the underlying database) - DataHub can supply these too, typically via
-a custom dataset property or a linked "Data Platform Instance".
+Field mapping (confirmed with the user: maturity_level/data_quality_score/
+etc. are assumed to live as DataHub customProperties, i.e. arbitrary
+key/value pairs, not structured properties or glossary terms):
+    owner, maturity_level, data_quality_score, frequency, tables_joined,
+    db_type, db_host, db_port, db_schema
+  are all read from customProperties by key name (see CUSTOM_PROPERTY_KEYS).
+  If your org's DataHub uses different key names, adjust CUSTOM_PROPERTY_KEYS
+  below rather than rewriting the query.
 
-Until this is wired, `get_catalog()` returns this same hardcoded mock
-data so the rest of the app (search, cards, tickets) has something real
-to develop against.
+`id` (used throughout this app's routes/tickets/cart) isn't a DataHub
+concept - DataHub identifies things by URN
+(e.g. `urn:li:dataset:(urn:li:dataPlatform:postgres,foo.bar,PROD)`), not a
+short slug. This maps each dataset's display name to a URL-safe slug for
+`id` (see `_slugify`). Two datasets with the same name would collide -
+fine for a small catalog, but revisit (e.g. hash the URN instead) if the
+real catalog grows large enough for that to be likely.
+
+Falls back to a hardcoded mock catalog (same shape) if DataHub is
+unreachable, unauthenticated, or returns something unexpected - so the
+rest of the app keeps working even before/if this is fully configured.
+"""
+import logging
+import re
+
+import httpx
+
+from ..config import settings
+
+logger = logging.getLogger("dgo")
+
+CUSTOM_PROPERTY_KEYS = {
+    "owner": "owner",
+    "maturity_level": "maturity_level",
+    "data_quality_score": "data_quality_score",
+    "frequency": "frequency",
+    "tables_joined": "tables_joined",
+    "db_type": "db_type",
+    "db_host": "db_host",
+    "db_port": "db_port",
+    "db_schema": "db_schema",
+}
+
+SEARCH_QUERY = """
+query listDatasets($query: String!) {
+  search(input: { type: DATASET, query: $query, start: 0, count: 100 }) {
+    searchResults {
+      entity {
+        urn
+        ... on Dataset {
+          properties {
+            name
+            description
+            customProperties { key value }
+          }
+        }
+      }
+    }
+  }
+}
 """
 
 MOCK_CATALOG = {
@@ -66,7 +123,54 @@ MOCK_CATALOG = {
 }
 
 
+def _slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "dataset"
+
+
+async def _fetch_from_datahub() -> dict:
+    url = f"{settings.datahub_api_url}/api/graphql"
+    headers = {"Content-Type": "application/json"}
+    if settings.datahub_api_token:
+        headers["Authorization"] = f"Bearer {settings.datahub_api_token}"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            url,
+            headers=headers,
+            json={"query": SEARCH_QUERY, "variables": {"query": "*"}},
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+
+    if payload.get("errors"):
+        raise RuntimeError(f"DataHub GraphQL errors: {payload['errors']}")
+
+    results = payload["data"]["search"]["searchResults"]
+    catalog: dict = {}
+    for result in results:
+        entity = result.get("entity") or {}
+        props = entity.get("properties") or {}
+        name = props.get("name") or entity.get("urn", "unknown")
+        custom = {p["key"]: p["value"] for p in (props.get("customProperties") or [])}
+
+        product_id = _slugify(name)
+        catalog[product_id] = {
+            "id": product_id,
+            "name": name,
+            "description": props.get("description") or "",
+            **{field: custom.get(key, "") for field, key in CUSTOM_PROPERTY_KEYS.items()},
+        }
+    return catalog
+
+
 async def get_catalog() -> dict:
-    """TODO: replace with a real DataHub GraphQL query once the instance
-    URL and token are confirmed."""
-    return MOCK_CATALOG
+    try:
+        catalog = await _fetch_from_datahub()
+        if not catalog:
+            raise RuntimeError("DataHub search returned zero datasets")
+        logger.info("Loaded %d dataset(s) from DataHub", len(catalog))
+        return catalog
+    except Exception as e:
+        logger.warning("DataHub fetch failed, falling back to mock catalog: %s", e)
+        return MOCK_CATALOG

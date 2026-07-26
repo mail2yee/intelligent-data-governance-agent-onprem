@@ -21,9 +21,13 @@ Camunda), and what business logic / UI direction to carry over.
   dock, zh/en toggle, light/dark toggle (light by default regardless of
   OS preference), collapsible nav rail. Verified via a full Playwright
   run through every flow against the real backend — zero console errors.
-- Camunda and DataHub integrations are **stubs** — see their docstrings
-  in `backend/app/integrations/` for exactly what's needed before they're
-  real.
+- Camunda (`pyzeebe`) and DataHub (GraphQL) integrations are **real,
+  wired clients** now, not mocks — verified to correctly attempt a
+  connection and fail gracefully when nothing's listening yet. Still
+  need: a deployed BPMN process (`CAMUNDA_PROCESS_ID` is a placeholder),
+  and validation of the DataHub field-mapping assumptions once there's a
+  real instance to test against. See HANDOFF.md "What's actually in this
+  repo right now" for the full list of what's confirmed vs. assumed.
 - LLM integration assumes an OpenAI-compatible endpoint — **unconfirmed**
   against the real on-prem gateway, see `backend/app/integrations/llm_client.py`.
 

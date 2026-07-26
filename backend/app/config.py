@@ -11,6 +11,18 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
 
     camunda_gateway_address: str = "localhost:26500"
+    # No BPMN process is deployed yet (confirmed with the user) - this is a
+    # placeholder. Deploy a real process and update it here, no code change needed.
+    camunda_process_id: str = "data-gov-approval"
+    # Leave unset to use an unauthenticated (insecure) gRPC channel - confirmed
+    # with the user this is likely fine for their trusted internal network.
+    # Set all three to use an OAuth2 client-credentials-authenticated channel
+    # instead (Camunda Identity/Keycloak) - see camunda_client.py docstring,
+    # this path is unconfirmed/untested against a live server.
+    camunda_oauth_client_id: str = ""
+    camunda_oauth_client_secret: str = ""
+    camunda_oauth_token_url: str = ""
+    camunda_oauth_audience: str = "zeebe-api"
 
     datahub_api_url: str = "http://localhost:8080"
     datahub_api_token: str = ""
