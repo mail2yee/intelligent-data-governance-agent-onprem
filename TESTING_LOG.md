@@ -1,7 +1,19 @@
 # Office testing log
 
-No Claude Code access at the office — this file is the handoff channel.
-Paste raw command output here (redirect to a file first so you get the
+No Claude Code access at the office — this file (and `debug-logs/`) is
+the handoff channel.
+
+**Easy path:** run `./scripts/collect-debug-log.sh` — it collects git
+status, docker/compose versions, reachability checks against
+github.com/ghcr.io/registry-1.docker.io/pypi.org/registry.npmjs.org,
+`docker compose config`/`pull`/`ps`/`logs`, does a best-effort redaction
+of anything that looks like a password/token/secret, shows you the
+result, and asks before committing + pushing it to `debug-logs/`. Read
+the output it shows you before confirming — the redaction is a safety
+net, not a guarantee.
+
+**Manual path (for anything the script doesn't cover):** paste raw
+command output here directly (redirect to a file first so you get the
 exact text, don't retype from memory), `git add TESTING_LOG.md && git
 commit && git push` before leaving, and it'll be here to read at home.
 
