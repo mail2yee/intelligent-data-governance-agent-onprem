@@ -234,7 +234,6 @@ knows exactly where things stand:
   + SLA banner threshold). All passed first try - no bugs found here.
 
 **Not done yet (next up):**
-- CI (`.github/workflows/`) - doesn't exist yet. GitHub Actions is
-  actually usable here (confirmed GitHub itself is reachable from the
-  company network, unlike PyPI/npm/Docker Hub), so this is worth setting
-  up for real, not skipping as "can't run in the target environment."
+- CI - intentionally NOT GitHub Actions. Company uses internal CI/CD
+  (Azure DevOps) - pipeline should be built there when that's next up,
+  not `.github/workflows/`.
