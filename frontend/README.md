@@ -16,6 +16,17 @@ Needs the backend running separately on `:8000` (see `../backend/README.md`)
 — `vite.config.js` proxies `/api` and `/health` to it, so no CORS setup is
 needed for local dev.
 
+## Linting and tests
+
+```bash
+npm run lint   # oxlint
+npm test       # vitest
+```
+
+`*.test.js`/`*.test.jsx` files sit next to the code they test. Uses
+`@testing-library/react` + `jsdom` (config in `vite.config.js`'s `test`
+block, setup file `src/setupTests.js`).
+
 ## What's actually here right now
 
 A full port of the PoC's UI, verified working end-to-end against the

@@ -226,10 +226,14 @@ knows exactly where things stand:
 - Frontend: `oxlint` (already present from the Vite scaffold) run for
   the first time - found and fixed two real unused-prop warnings in
   `TopBar.jsx`.
+- Frontend: real test suite added (vitest + React Testing Library, 29
+  tests) - `utils.js`, an `i18n.js` zh/en key-parity check (prevents
+  translation drift), `streamChat()`'s SSE frame parsing (including a
+  frame deliberately split across two chunks), and three components
+  (ProductCard, NavRail's collapse behavior, TicketRow's approve/reject
+  + SLA banner threshold). All passed first try - no bugs found here.
 
 **Not done yet (next up):**
-- Frontend test suite (vitest + React Testing Library) - doesn't exist
-  yet.
 - CI (`.github/workflows/`) - doesn't exist yet. GitHub Actions is
   actually usable here (confirmed GitHub itself is reachable from the
   company network, unlike PyPI/npm/Docker Hub), so this is worth setting
