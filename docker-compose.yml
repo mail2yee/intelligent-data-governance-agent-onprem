@@ -3,7 +3,11 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: dgo
-      POSTGRES_PASSWORD: dgo
+      # Defaults to a weak password so `docker compose up` works with zero
+      # setup for local dev - never rely on this default outside local dev.
+      # Set a real POSTGRES_PASSWORD in a root .env file (not committed) to
+      # override it.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dgo}
       POSTGRES_DB: dgo
     ports:
       - "5432:5432"
@@ -20,7 +24,7 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://dgo:dgo@postgres:5432/dgo
+      DATABASE_URL: postgresql+asyncpg://dgo:${POSTGRES_PASSWORD:-dgo}@postgres:5432/dgo
     ports:
       - "8000:8000"
     depends_on:

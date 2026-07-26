@@ -37,6 +37,7 @@ Falls back to a hardcoded mock catalog (same shape) if DataHub is
 unreachable, unauthenticated, or returns something unexpected - so the
 rest of the app keeps working even before/if this is fully configured.
 """
+
 import logging
 import re
 

@@ -3,16 +3,31 @@ Chat / search assistant logic - ported behavior from the GCP PoC's /chat
 route (see HANDOFF.md), rewired to call the on-prem LLM client and
 stream via the same step/token/final SSE event shape.
 """
+
 import json
 from collections.abc import AsyncIterator
 
 from .integrations.llm_client import stream_chat_completion
 
 GREETING_WORDS = {
-    "hi", "hello", "hey", "hiya", "howdy", "yo",
-    "good morning", "good afternoon", "good evening",
-    "你好", "您好", "哈囉", "安安", "哈羅", "嗨",
-    "早安", "午安", "晚安",
+    "hi",
+    "hello",
+    "hey",
+    "hiya",
+    "howdy",
+    "yo",
+    "good morning",
+    "good afternoon",
+    "good evening",
+    "你好",
+    "您好",
+    "哈囉",
+    "安安",
+    "哈羅",
+    "嗨",
+    "早安",
+    "午安",
+    "晚安",
 }
 
 
@@ -122,18 +137,37 @@ async def run_chat(user_msg: str, lang: str, catalog: dict) -> AsyncIterator[str
             reply += piece
             yield sse_event("token", text=piece)
 
-        for product_id in catalog:
-            if product_id in reply.lower() or product_id in user_msg.lower():
+        reply_lower = reply.lower()
+        for product_id, item in catalog.items():
+            name_lower = str(item.get("name", "")).lower()
+            # Check the display name too, not just the literal id slug - a
+            # real LLM naturally answers with the human-readable name
+            # ("Specific Customer Capacity Allocation"), not the hyphenated
+            # slug ("customer-capacity-allocation"), so id-only matching
+            # would silently never match a real model's natural phrasing.
+            if (
+                product_id in reply_lower
+                or product_id in user_msg.lower()
+                or (name_lower and name_lower in reply_lower)
+            ):
                 matched_products.append(product_id)
 
-        not_found_markers = ["抱歉", "沒有找到"] if lang == "zh" else ["sorry", "no data subject", "doesn't match", "does not match"]
+        not_found_markers = (
+            ["抱歉", "沒有找到"]
+            if lang == "zh"
+            else ["sorry", "no data subject", "doesn't match", "does not match"]
+        )
         if any(m.lower() in reply.lower() for m in not_found_markers):
             matched_products = []
             yield step("⚠️ 判定此需求與資料目錄無關，已啟動 Zero Hallucination 攔截。")
         else:
             yield step(f"🏁 任務規劃與執行完畢，推薦：{json.dumps(matched_products)}")
     except Exception as e:
-        yield step(f"⚠️ LLM 無法連線（{e}），降級至本地關鍵字比對。" if lang == "zh" else f"⚠️ LLM unreachable ({e}), falling back to local keyword matching.")
+        yield step(
+            f"⚠️ LLM 無法連線（{e}），降級至本地關鍵字比對。"
+            if lang == "zh"
+            else f"⚠️ LLM unreachable ({e}), falling back to local keyword matching."
+        )
         matched_products, reply = local_rule_match(user_msg, lang, catalog)
         yield sse_event("token", text=reply)
         if not matched_products:

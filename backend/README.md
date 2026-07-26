@@ -19,6 +19,23 @@ Needs a reachable Postgres for `/api/tickets*` to work (see
 work without one - well, `/api/tickets*` will error without a DB, but the
 app itself will still start.
 
+## Linting, type checking, tests
+
+```bash
+pip install -r requirements-dev.txt   # adds ruff, mypy, pytest on top of requirements.txt
+ruff check app/ tests/                # lint
+ruff format app/ tests/               # format
+mypy app/                             # type check
+pytest -v                             # run the test suite
+```
+
+Config for all four lives in `pyproject.toml`. Tests run against a
+temp-file SQLite database (not Postgres) for speed/simplicity - see the
+docstring at the top of `tests/conftest.py` for why, and the tradeoff
+that implies (nothing here relies on Postgres-specific SQL, so this is
+fine for testing application logic, not a substitute for testing against
+real Postgres if that ever becomes necessary).
+
 ## What's implemented vs. stubbed
 
 - `/health`, `/api/catalog`, `/api/catalog/{id}/connection` (falls back to

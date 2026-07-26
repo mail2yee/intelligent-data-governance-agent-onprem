@@ -12,6 +12,7 @@ If the real on-prem gateway's request/response shape differs, this is the
 only file that should need to change - callers just consume
 `stream_chat_completion()` as an async generator of text chunks.
 """
+
 import json
 from collections.abc import AsyncIterator
 
@@ -28,22 +29,24 @@ async def stream_chat_completion(messages: list[dict]) -> AsyncIterator[str]:
         headers["Authorization"] = f"Bearer {settings.llm_api_key}"
     payload = {"model": settings.llm_model, "messages": messages, "stream": True}
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        async with client.stream("POST", url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[len("data:"):].strip()
-                if data == "[DONE]" or not data:
-                    continue
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                piece = (choices[0].get("delta") or {}).get("content")
-                if piece:
-                    yield piece
+    async with (
+        httpx.AsyncClient(timeout=60) as client,
+        client.stream("POST", url, json=payload, headers=headers) as resp,
+    ):
+        resp.raise_for_status()
+        async for line in resp.aiter_lines():
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:") :].strip()
+            if data == "[DONE]" or not data:
+                continue
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            piece = (choices[0].get("delta") or {}).get("content")
+            if piece:
+                yield piece

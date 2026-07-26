@@ -181,3 +181,56 @@ facts only reachable from inside the company network:
 
 The "目錄維護"/Catalog Admin nav item is still a disabled placeholder
 (was in the PoC too — no catalog editing UI ever existed there either).
+
+## Engineering standards / tests — IN PROGRESS as of this commit
+
+The user asked for this explicitly (no hardcoding, linting/type
+standards, and - emphatically - real tests, not just manual verification
+during development). Status, so a fresh session picking this up mid-flight
+knows exactly where things stand:
+
+**Done:**
+- Two real hardcodes fixed: the fallback-approver emails in
+  `main.py`'s `create_ticket` now come from `settings.default_fallback_approvers_list`
+  (env-configurable), and `docker-compose.yml`'s Postgres password now
+  reads from a `POSTGRES_PASSWORD` env var (root `.env.example` added)
+  instead of being hardcoded, defaulting to the same weak value only for
+  zero-setup local dev.
+- Backend: `ruff` (lint + format) and `mypy` configured via
+  `backend/pyproject.toml`, both clean. Caught and fixed real issues in
+  the process: an unused, incorrectly-typed `get_session()` function in
+  `db.py` was dead code (removed, not fixed - nothing called it) and a
+  nested-`with` simplification in `llm_client.py`.
+- Backend: a real pytest suite exists now (`backend/tests/`, 36 tests,
+  see `backend/README.md` for how to run it) covering `chat.py`
+  (greetings, LLM success/failure streaming, local fallback matching),
+  the full ticket/approval API and state machine, and both integration
+  clients' fallback behavior. **This caught two real bugs no amount of
+  my manual curl/Playwright testing had surfaced:**
+  1. `submit_approval`'s cycle-time calculation crashed
+     (`TypeError: can't subtract offset-naive and offset-aware datetimes`)
+     — SQLite doesn't round-trip timezone-aware datetimes the way
+     Postgres does, so this only broke against the test DB, but the fix
+     (normalize `created_at`'s tzinfo before subtracting, in `main.py`)
+     is a genuine robustness improvement regardless of backend.
+  2. `run_chat`'s matched-product detection only checked whether the
+     literal hyphenated id slug (`customer-capacity-allocation`)
+     appeared in the LLM's reply text — but a real LLM naturally answers
+     with the human-readable name ("Specific Customer Capacity
+     Allocation"), not the slug. This means matching likely never
+     actually worked against a real model's natural phrasing, in
+     *either* this repo or the original GCP PoC (which had the identical
+     pattern) - nobody had tested that specific path against real output
+     shaped like a real LLM would produce it. Fixed in `chat.py` to also
+     check the catalog item's `name` field, not just its `id`.
+- Frontend: `oxlint` (already present from the Vite scaffold) run for
+  the first time - found and fixed two real unused-prop warnings in
+  `TopBar.jsx`.
+
+**Not done yet (next up):**
+- Frontend test suite (vitest + React Testing Library) - doesn't exist
+  yet.
+- CI (`.github/workflows/`) - doesn't exist yet. GitHub Actions is
+  actually usable here (confirmed GitHub itself is reachable from the
+  company network, unlike PyPI/npm/Docker Hub), so this is worth setting
+  up for real, not skipping as "can't run in the target environment."

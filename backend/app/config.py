@@ -29,9 +29,21 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:5173"
 
+    # Used to pad a ticket's approver list up to a minimum of 3 when the
+    # requested products' own owners don't already provide that many
+    # (see main.py create_ticket). This was a hardcoded PoC placeholder
+    # rule ported as-is - worth reconsidering the whole "pad to 3" policy
+    # once real approval requirements are known, not just where the emails
+    # come from.
+    default_fallback_approvers: str = "compliance_director@example.com,info_sec_auditor@example.com"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def default_fallback_approvers_list(self) -> list[str]:
+        return [o.strip() for o in self.default_fallback_approvers.split(",") if o.strip()]
 
 
 settings = Settings()

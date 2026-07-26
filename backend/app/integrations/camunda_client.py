@@ -28,6 +28,7 @@ ID has been deployed, this fails gracefully (caught exception ->
 "Skipped" status) rather than breaking ticket creation - mirrors the
 LLM fallback pattern in chat.py.
 """
+
 import logging
 
 import grpc
@@ -70,15 +71,11 @@ def _build_channel():
             callback(None, e)
 
     call_credentials = grpc.metadata_call_credentials(_get_token)
-    channel_credentials = grpc.composite_channel_credentials(
-        grpc.ssl_channel_credentials(), call_credentials
-    )
+    channel_credentials = grpc.composite_channel_credentials(grpc.ssl_channel_credentials(), call_credentials)
     return grpc.aio.secure_channel(settings.camunda_gateway_address, channel_credentials)
 
 
-async def start_approval_process(
-    ticket_id: str, products: list[str], owners: list[str], purpose: str
-) -> str:
+async def start_approval_process(ticket_id: str, products: list[str], owners: list[str], purpose: str) -> str:
     try:
         channel = _build_channel()
         client = ZeebeClient(channel)

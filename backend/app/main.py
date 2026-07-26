@@ -1,7 +1,7 @@
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -110,7 +110,7 @@ async def create_ticket(request: Request):
         if item and item["owner"] not in owners:
             owners.append(item["owner"])
     if len(owners) < 3:
-        owners.extend(["compliance_director@example.com", "info_sec_auditor@example.com"])
+        owners.extend(settings.default_fallback_approvers_list)
 
     ticket_id = f"FAB-{uuid.uuid4().hex[:6].upper()}"
     async with async_session() as session:
@@ -138,9 +138,7 @@ async def create_ticket(request: Request):
 async def list_tickets():
     async with async_session() as session:
         result = await session.execute(
-            select(Ticket)
-            .options(selectinload(Ticket.approvals))
-            .order_by(Ticket.created_at.desc())
+            select(Ticket).options(selectinload(Ticket.approvals)).order_by(Ticket.created_at.desc())
         )
         tickets = result.scalars().unique().all()
         return [_ticket_to_dict(t) for t in tickets]
@@ -156,9 +154,7 @@ async def submit_approval(ticket_id: str, request: Request):
 
     async with async_session() as session:
         result = await session.execute(
-            select(Ticket)
-            .options(selectinload(Ticket.approvals))
-            .where(Ticket.id == ticket_id)
+            select(Ticket).options(selectinload(Ticket.approvals)).where(Ticket.id == ticket_id)
         )
         ticket = result.scalar_one_or_none()
         if not ticket:
@@ -168,11 +164,18 @@ async def submit_approval(ticket_id: str, request: Request):
         if not approval:
             raise HTTPException(status_code=404, detail="approver not found on this ticket")
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         approval.decision = decision
         approval.reason = reason
         approval.completed_at = now
-        approval.cycle_time_seconds = (now - approval.created_at).total_seconds()
+        # created_at always stored as UTC (see db.py's default), but not
+        # every DB backend round-trips the tzinfo on read (SQLite doesn't;
+        # Postgres does) - normalize rather than assume, or the subtraction
+        # below raises TypeError on a naive/aware mismatch.
+        created_at = approval.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        approval.cycle_time_seconds = (now - created_at).total_seconds()
 
         states = [a.decision for a in ticket.approvals]
         if "Reject" in states:
