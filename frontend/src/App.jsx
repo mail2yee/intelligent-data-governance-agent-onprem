@@ -103,9 +103,7 @@ function App() {
     <div className="shell">
       <TopBar
         t={t}
-        lang={lang}
         onToggleLang={() => setLang((l) => (l === 'zh' ? 'en' : 'zh'))}
-        theme={theme}
         onToggleTheme={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
       />
 

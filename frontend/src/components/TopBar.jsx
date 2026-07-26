@@ -1,4 +1,4 @@
-export default function TopBar({ t, lang, onToggleLang, theme, onToggleTheme }) {
+export default function TopBar({ t, onToggleLang, onToggleTheme }) {
   return (
     <header className="topbar">
       <div className="mark">DG</div>
