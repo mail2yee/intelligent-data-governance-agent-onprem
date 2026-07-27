@@ -108,18 +108,37 @@ or move server-side, whichever is more natural in the new stack.
 ## UI/UX direction (approved, carry into React)
 
 Redesigned once already in the PoC from a dark neon aesthetic to a
-Google Material-inspired design — the user explicitly approved this
-direction; don't relitigate it, port it:
+Google Material-inspired design, then **restyled again on 2026-07-28** to
+align with the company's internal TADiS design system (see
+`TADiS-AI/TADiS`, a private repo — the boss's directive was "use this
+style"). Layout/structure below is unchanged from the earlier Material
+direction; only the color palette, font stack, and border-radius scale
+moved. Scope was deliberately kept to visual tokens only — this app
+stays its own independently-deployed React app (not merged into the
+TADiS codebase, not turned into an "Applications" tile/widget there
+either — those were both considered and explicitly not chosen, see the
+options discussed in that session if this needs revisiting):
 
 - **Layout:** top app bar + collapsible left nav rail (groups toggle via
   a chevron) + main content area. Not a single split-screen layout.
 - **Color:** light theme by default **regardless of OS
   `prefers-color-scheme`** (explicit user requirement) with a manual
-  toggle to dark. Google Blue accent (`#1a73e8` light / `#8ab4f8` dark),
-  neutral backgrounds tinted toward the accent (not pure grey), semantic
-  colors (success/warning/critical) kept separate from the accent hue.
-- **Type:** "Google Sans"/Roboto-first font stack with system fallbacks,
-  monospace for IDs/data values/timestamps.
+  toggle to dark. TADiS's brick/rust accent (`#9a3412` light /
+  `#e44e1c` dark, taken from `TADiS-AI/TADiS`'s `defaultColorCode.jsx` /
+  `darkModeColorCode.jsx`), neutral backgrounds tinted toward the accent
+  (not pure grey), semantic colors (success/warning/critical) kept
+  separate from the accent hue. All values are CSS custom properties in
+  `frontend/src/index.css` — variable *names* are unchanged from the
+  Google-blue version, only values moved, so no component needed
+  touching.
+- **Border radius:** bumped from an 8px scale to 12px across
+  `frontend/src/App.css` (pills/circles/a couple of already-14px spots
+  left alone) to read closer to TADiS's MUI `shape.borderRadius: 14`
+  without adopting MUI itself.
+- **Type:** Roboto/Segoe UI-first font stack with system fallbacks (was
+  "Google Sans"-first — dropped since TADiS doesn't use it either and it
+  was already just falling back to Roboto in practice, no `@font-face`
+  ever loaded it), monospace for IDs/data values/timestamps.
 - **Discover screen:** large centered Google-search-style search box as
   the hero, quick-suggestion chips, result cards below, a collapsed-by-
   default "show reasoning steps" disclosure (auto-expands live while a
