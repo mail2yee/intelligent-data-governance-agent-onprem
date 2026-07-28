@@ -41,6 +41,21 @@ async def test_sync_catalog_inserts_rows():
     assert rows["move-forecast-summary"].owner == ""
 
 
+async def test_search_text_converts_traditional_chinese_to_simplified():
+    catalog = {
+        "p1": {
+            "name": "特定客戶產能分配",
+            "description": "為特定VIP客戶配置的晶圓代工產能",
+            "tables_joined": "",
+        },
+    }
+    await wrenai_client.sync_catalog(catalog)
+    rows = await _all_products()
+    search_text = rows["p1"].search_text
+    assert "特定客戶產能分配" in search_text  # original Traditional preserved
+    assert "特定客户产能分配" in search_text  # Simplified variant also present
+
+
 async def test_sync_catalog_updates_existing_and_removes_stale_rows():
     await wrenai_client.sync_catalog(CATALOG)
 

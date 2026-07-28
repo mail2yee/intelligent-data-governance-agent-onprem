@@ -46,3 +46,13 @@ columns:
     type: varchar
   - name: db_schema
     type: varchar
+  - name: search_text
+    type: varchar
+    properties:
+      display_name: 搜尋索引文字
+      description: >
+        Denormalized name + description + tables_joined, in both
+        Traditional and Simplified Chinese. Match keywords against THIS
+        column, not name/description/tables_joined individually - it
+        already covers both scripts, so a keyword works regardless of
+        which script it's written in.

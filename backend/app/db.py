@@ -63,6 +63,14 @@ class DataProduct(Base):
     db_host: Mapped[str] = mapped_column(String)
     db_port: Mapped[str] = mapped_column(String)
     db_schema: Mapped[str] = mapped_column(String)
+    # Denormalized name+description+tables_joined, stored in both
+    # Traditional and Simplified Chinese (see wrenai_client._search_text) -
+    # the LLM's SQL-generation step matches keywords against this single
+    # column instead of name/description/tables_joined individually, so a
+    # keyword in either script still hits (confirmed: small local LLMs
+    # sometimes emit Simplified keywords for a Traditional-Chinese catalog,
+    # and plain ILIKE does no script folding).
+    search_text: Mapped[str] = mapped_column(String)
 
 
 engine = create_async_engine(settings.database_url, echo=False)

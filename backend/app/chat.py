@@ -91,25 +91,31 @@ def build_sql_prompt(user_msg: str, catalog: dict) -> str:
     return f"""
     You have a Postgres table `data_products` with columns (all text):
     id, name, description, owner, maturity_level, data_quality_score,
-    frequency, tables_joined, db_type, db_host, db_port, db_schema.
+    frequency, tables_joined, db_type, db_host, db_port, db_schema,
+    search_text (name + description + tables_joined, already present in
+    both Traditional and Simplified Chinese - always match against this
+    column, never against name/description/tables_joined directly, and
+    never convert your own keywords between scripts yourself).
     It currently has rows for exactly these ids: {ids}
 
     The user's request is: "{user_msg}"
 
-    First, extract 2-4 short keywords or synonyms from the request (in
-    the same language as the request) - never use the entire sentence
-    as a match pattern, catalog text is short and a full-sentence
-    substring will essentially never match it.
+    First, extract 2-4 short keywords or synonyms from the request,
+    written in whichever script the request itself uses - never use the
+    entire sentence as a match pattern, catalog text is short and a
+    full-sentence substring will essentially never match it. Prefer a
+    keyword specific enough to distinguish between catalog rows (e.g.
+    "customer capacity" rather than just "customer", which most rows
+    would mention).
 
     Write ONE SQL SELECT statement, selecting only the `id` and `name`
     columns from `data_products`, using the standard SQL operator form
-    `column ILIKE '%keyword%'` (not a function-call form like
-    `ilike(col, pattern)`) - OR the keyword conditions together across
-    the name, description, and tables_joined columns.
+    `search_text ILIKE '%keyword%'` (not a function-call form like
+    `ilike(col, pattern)`) - OR the keyword conditions together.
 
     Example shape only (do not reuse "capacity", extract your own
     keywords from the actual request above):
-    SELECT id, name FROM data_products WHERE name ILIKE '%capacity%' OR description ILIKE '%capacity%' OR tables_joined ILIKE '%capacity%'
+    SELECT id, name FROM data_products WHERE search_text ILIKE '%capacity%' OR search_text ILIKE '%capacity allocation%'
 
     If nothing in the table plausibly matches, reply with exactly:
     NO_MATCH

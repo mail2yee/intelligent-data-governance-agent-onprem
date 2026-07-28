@@ -52,6 +52,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import opencc
 from sqlalchemy import select
 from wren.engine import WrenEngine
 from wren.profile import expand_profile_secrets, resolve_profile_for_project
@@ -81,6 +82,24 @@ _CATALOG_FIELDS = (
     "db_schema",
 )
 
+# Fields folded into search_text (see _search_text below) - deliberately
+# narrower than _CATALOG_FIELDS, just the columns worth free-text matching
+# against.
+_SEARCHABLE_FIELDS = ("name", "description", "tables_joined")
+
+_TRADITIONAL_TO_SIMPLIFIED = opencc.OpenCC("t2s")
+
+
+def _search_text(item: dict) -> str:
+    """Traditional-Chinese catalog text, plus a Simplified-Chinese copy of
+    the same text, concatenated - confirmed via local testing that a small
+    LLM asked to write SQL sometimes extracts a Simplified-Chinese keyword
+    for a Traditional-Chinese request (or vice versa), and plain ILIKE does
+    no script folding, so a keyword in either script needs to be able to
+    hit this column regardless of which script the source data is in."""
+    original = " ".join(str(item.get(field, "")) for field in _SEARCHABLE_FIELDS)
+    return f"{original} {_TRADITIONAL_TO_SIMPLIFIED.convert(original)}"
+
 
 async def sync_catalog(catalog: dict) -> None:
     """Upsert the current DataHub catalog into our own `data_products`
@@ -95,6 +114,7 @@ async def sync_catalog(catalog: dict) -> None:
         for product_id, item in catalog.items():
             seen.add(product_id)
             values = {field: str(item.get(field, "")) for field in _CATALOG_FIELDS}
+            values["search_text"] = _search_text(item)
             if product_id in existing:
                 for field, value in values.items():
                     setattr(existing[product_id], field, value)

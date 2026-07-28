@@ -260,20 +260,36 @@ facts only reachable from inside the company network:
   1. **Traditional vs. Simplified Chinese mismatch** - the model
      sometimes extracts a Simplified Chinese keyword (e.g. `产能`) for a
      Traditional-Chinese catalog (`產能`); Postgres `ILIKE` does no
-     script folding, so this silently never matches. Needs either an
-     explicit prompt instruction to preserve the input's script, or
-     normalizing both sides before matching (e.g. OpenCC) - not done
-     yet.
+     script folding, so this silently never matched. **Fixed
+     (2026-07-28):** relying on a prompt instruction to preserve script
+     was correctly judged not reliable enough for a small local model
+     (Qwen's training data leans Simplified regardless of instructions) -
+     instead added `DataProduct.search_text` (`db.py`), a denormalized
+     `name + description + tables_joined` blob stored in **both** scripts
+     (`wrenai_client._search_text()`, using the pure-Python
+     `opencc-python-reimplemented` package, `t2s` config - no native/Rust
+     build step, installs cleanly). `build_sql_prompt()` now tells the
+     LLM to match only against `search_text`, in whichever script it
+     wants - confirmed via repeated testing that this also incidentally
+     fixed the non-standard `ilike(col, pattern)` function-call syntax
+     issue (a single column to match against seems to be a simpler
+     pattern for the model to get the operator syntax right on too).
   2. **Overly generic extracted keywords** - e.g. extracting `客戶`
-     ("customer") alone matches most catalog entries, since most of
-     them mention a customer somewhere - this is what's causing the
-     `customer-demand-orders` false-positive seen repeatedly across
-     both models.
-  Bottom line: the two-model split is implemented and is a reasonable
-  thing to keep (a tool-calling model is very unlikely to be *worse* for
-  this), but it did not turn out to be the fix for the reliability gap
-  on its own - the two causes above are the more likely next things to
-  address, whenever this gets revisited.
+     ("customer") alone matches most catalog entries, since most of them
+     mention a customer somewhere. **Not fixed** - still observed after
+     the `search_text` change (repeated testing: correct product matched
+     in most runs, but often with one extra unrelated product included
+     via an overly generic keyword). This is a precision problem in
+     keyword *specificity*, orthogonal to the script-matching fix above -
+     the prompt already asks for a "specific enough" keyword but a small
+     local model doesn't reliably judge that.
+  Net result after both rounds of fixes: the two-model split
+  (`LLM_SQL_MODEL`) is a reasonable thing to keep but wasn't the fix; the
+  `search_text` dual-script column measurably improved things (no longer
+  silently missing an obviously-correct match) but false-positive extra
+  products from overly generic keywords remain a known, unresolved
+  limitation of small local models for this step - revisit once pointed
+  at the real company LLM gateway.
 
 The "目錄維護"/Catalog Admin nav item is still a disabled placeholder
 (was in the PoC too — no catalog editing UI ever existed there either).
