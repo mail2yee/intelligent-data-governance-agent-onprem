@@ -12,7 +12,7 @@ ignore_missing_imports = true
 disallow_untyped_defs = false
 warn_unused_ignores = true
 warn_redundant_casts = true
-exclude = ["tests/"]
+exclude = ["tests/", "evals/"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

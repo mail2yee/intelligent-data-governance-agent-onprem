@@ -383,7 +383,7 @@ knows exactly where things stand:
   the process: an unused, incorrectly-typed `get_session()` function in
   `db.py` was dead code (removed, not fixed - nothing called it) and a
   nested-`with` simplification in `llm_client.py`.
-- Backend: a real pytest suite exists now (`backend/tests/`, 42 tests as
+- Backend: a real pytest suite exists now (`backend/tests/`, 44 tests as
   of the WrenAI addition, see `backend/README.md` for how to run it)
   covering `chat.py` (greetings, LLM success/failure streaming, local
   fallback matching, the semantic-layer verification/fallback chain), the
@@ -415,6 +415,25 @@ knows exactly where things stand:
   frame deliberately split across two chunks), and three components
   (ProductCard, NavRail's collapse behavior, TicketRow's approve/reject
   + SLA banner threshold). All passed first try - no bugs found here.
+- **Backend: added a DeepEval-based eval suite** (`backend/evals/`,
+  separate from `backend/tests/` - see `backend/README.md`'s "Evals"
+  section for how to run it) to replace the ad-hoc "run the same query a
+  few times and eyeball it" testing this session was otherwise doing
+  manually. Confirmed DeepEval (still the dominant pytest-native LLM eval
+  framework as of 2026) supports a local Ollama model as the LLM judge
+  directly - no OpenAI key needed, consistent with everything else in
+  this repo being built for an air-gapped network. Metrics: a hard,
+  non-judged structural assertion (matched products must be real catalog
+  ids - regression guard on WrenAI's governance), plus judge-scored
+  Faithfulness, Answer Relevancy, and a custom `GEval` "recommendation
+  precision" metric against a small golden-query set (in-catalog zh/en +
+  out-of-catalog zero-hallucination cases). **Ran it for real** against
+  the actual Docker Compose stack + local Ollama: results varied
+  0.50-1.00 pass rate across the 6 golden queries, consistent with (not
+  contradicting) the keyword-precision limitation already documented
+  above - this is meant as a repeatable signal to catch regressions, not
+  a claim that today's reliability is good enough; see the deliberately
+  low `PASS_RATE_FLOOR` in `evals/test_chat_eval.py` and its comment.
 
 **Not done yet (next up):**
 - CI - intentionally NOT GitHub Actions. Company uses internal CI/CD

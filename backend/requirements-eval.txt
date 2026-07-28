@@ -1,0 +1,5 @@
+# Only needed for backend/evals/ (DeepEval-based LLM-judge eval suite,
+# see that directory's docstring) - not a runtime dependency of the app
+# itself, and not needed for the fast tests/ suite either.
+deepeval
+ollama

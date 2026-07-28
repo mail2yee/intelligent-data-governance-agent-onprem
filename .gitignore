@@ -15,6 +15,9 @@ dist/
 # backend/entrypoint.sh / app/integrations/wrenai_client.py)
 wren/project/target/
 
+# DeepEval's local cache/telemetry/run-result files (see backend/evals/)
+backend/.deepeval/
+
 # Secrets - never commit real values
 .env
 backend/.env

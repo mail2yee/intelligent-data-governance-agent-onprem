@@ -36,6 +36,33 @@ that implies (nothing here relies on Postgres-specific SQL, so this is
 fine for testing application logic, not a substitute for testing against
 real Postgres if that ever becomes necessary).
 
+## Evals (DeepEval + local LLM judge)
+
+`evals/` is a separate, slower suite from `tests/` - it hits the real,
+running `/api/chat` (Docker Compose stack up, real Postgres/WrenAI) and
+uses [DeepEval](https://deepeval.com) with a local Ollama model as the
+LLM judge to score reply faithfulness, relevancy, and recommendation
+precision on a small golden-query set (see `evals/golden_queries.py`).
+Not part of a bare `pytest` run (`pyproject.toml`'s `testpaths` excludes
+it) - run explicitly:
+
+```bash
+pip install -r requirements-eval.txt
+docker compose up -d --build            # from the repo root
+ollama pull qwen2.5:latest              # or whatever DGO_EVAL_JUDGE_MODEL is
+DGO_EVAL_TRIALS=3 pytest evals/ -v -s
+```
+
+Honest framing (see `evals/test_chat_eval.py`'s module docstring): this
+is a repeatable signal, not a certified quality gate - LLM output is
+non-deterministic, so each query runs `DGO_EVAL_TRIALS` times and results
+get aggregated into a pass rate rather than asserted per-trial. The one
+hard, non-LLM-judged assertion (matched products must always be real
+catalog ids) is a regression guard on WrenAI's governance; everything
+else is scored against a deliberately low floor, documented in
+HANDOFF.md alongside the known keyword-precision limitation it's meant
+to catch a regression against, not paper over.
+
 ## What's implemented vs. stubbed
 
 - `/health`, `/api/catalog`, `/api/catalog/{id}/connection` (falls back to
