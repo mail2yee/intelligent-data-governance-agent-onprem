@@ -14,7 +14,7 @@ Camunda), and what business logic / UI direction to carry over.
 
 **技術堆疊：** 後端 FastAPI + PostgreSQL，前端 React + Vite，Camunda（用 `pyzeebe`/gRPC）跟 DataHub（GraphQL）都是真的串接（不是 mock），串不上時會 graceful fallback（例如查目錄失敗就退回內建的假目錄，LLM 打不通就退回本地關鍵字比對）。另外還內嵌了 WrenAI（`wrenai` pip 套件，**不是**另外一個 service）當語意層——LLM 對照語意模型欄位名組 SQL，WrenAI 的 governed engine 執行並擋掉任何沒宣告過的欄位/資料表，用來取代原本「靠 prompt 指令+事後字串比對」的推薦機制，讓「這句話該推薦哪個資料主體」這件事變成結構性零幻想，而不是只靠 LLM 自己乖。
 
-**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試；後端 36 個 pytest、前端 29 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。還沒確認的三件事：LLM gateway 是不是真的走 OpenAI-compatible 格式、Camunda 的 BPMN process 還沒部署、DataHub 的欄位對應（`customProperties`）還沒對到真實 instance 驗證過。
+**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 44 個 pytest、前端 29 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 的 OpenAI-compatible 假設已經拿本機 Ollama 實測驗證過可行，但**公司內部真實的 LLM gateway 還沒接過**——這是明天到公司要做的事，見下面「到公司後怎麼做」。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。還沒確認的：Camunda 的 BPMN process 還沒部署、DataHub 的欄位對應（`customProperties`）還沒對到真實 instance 驗證過。
 
 **架構：** 三個 container 用 `docker-compose` 跑——`frontend`（nginx 提供 React 靜態檔，:8080）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 再讀寫 `postgres`（:5432），並對外打三個內網服務：LLM gateway、Camunda 的 Zeebe gRPC gateway、DataHub 的 GraphQL API——任何一個打不通都有 fallback，不會直接掛掉。完整圖見下面「Architecture」章節。
 
@@ -116,8 +116,17 @@ pytest backend/evals/ -v -s
   and validation of the DataHub field-mapping assumptions once there's a
   real instance to test against. See HANDOFF.md "What's actually in this
   repo right now" for the full list of what's confirmed vs. assumed.
-- LLM integration assumes an OpenAI-compatible endpoint — **unconfirmed**
-  against the real on-prem gateway, see `backend/app/integrations/llm_client.py`.
+- LLM integration assumes an OpenAI-compatible endpoint — **confirmed
+  working against a real local Ollama** (2026-07-28), but still
+  **unconfirmed against the company's actual on-prem gateway** (a
+  different, untested endpoint), see
+  `backend/app/integrations/llm_client.py`.
+- WrenAI, embedded as a Python library (not a separate service - see
+  HANDOFF.md), enforces zero-hallucination product matching for
+  `chat.py`; a DeepEval-based eval suite (`backend/evals/`) can score
+  reply quality/precision against any OpenAI-compatible judge model,
+  local or the company's real gateway — see "Evals" in
+  `backend/README.md`.
 
 ## Architecture
 
@@ -155,6 +164,53 @@ flowchart LR
 Ticket/approval state machine and chat contract are documented in
 `HANDOFF.md` ("Business logic and data model to preserve") — this
 diagram is just the component/network shape, not the business logic.
+
+## Product flow
+
+What a user actually does, end to end - full business rules (owner
+padding, SLA threshold, exact status-derivation logic) are in
+`HANDOFF.md` "Business logic and data model to preserve"; this is the
+shape of the flow, not every rule.
+
+```mermaid
+flowchart LR
+    A["Discover: type a need\nin natural language"] --> B["chat.py matches it to\na real catalog product\n(zero-hallucination, see Architecture)"]
+    B --> C["add matched product(s)\nto cart"]
+    C --> D["Submit: objective + purpose\n-> creates a ticket"]
+    D --> E["owners derived from each\nproduct's owner, padded to\nat least 3 with fallback approvers"]
+    E --> F["Approvals: each owner\napproves or rejects"]
+    F -->|any Reject| G["ticket: REJECTED"]
+    F -->|all decided, none rejected| H["ticket: APPROVED"]
+    F -->|still waiting| I["ticket: PENDING_APPROVAL\n+ SLA banner if the slowest\npending owner > 24h"]
+    H --> J["Connection Code dialog:\ndb_type/host/port/schema\nfor the approved product"]
+```
+
+- **Discover** (`DiscoverView.jsx` / `chat.py`): a natural-language need
+  gets matched to catalog product(s) via the semantic layer, streamed
+  live as `step`/`token` SSE events, cards render once a `final` event
+  arrives with the verified `matched_products`.
+- **Cart → Submit** (`CartBar.jsx`, `SubmitDialog.jsx` /
+  `POST /api/tickets`): selected products + an objective/purpose become
+  a ticket. Owners are the union of each product's real owner, padded to
+  a minimum of 3 with `DEFAULT_FALLBACK_APPROVERS` if short - this
+  padding rule is arbitrary PoC filler, ported as-is, worth reconsidering
+  once real approval requirements are known (see HANDOFF.md). Camunda is
+  notified best-effort (`camunda_client.py`) - a "Skipped" status if
+  unreachable/undeployed doesn't block ticket creation.
+- **Approvals** (`ApprovalsView.jsx`/`TicketRow.jsx` /
+  `POST /api/tickets/{id}/approvals`): each owner approves or rejects
+  independently; ticket status is derived, not stored as an independent
+  field - `REJECTED` wins if any owner rejects, `APPROVED` only once
+  every owner has decided and none rejected, otherwise
+  `PENDING_APPROVAL`. The SLA banner looks at whichever pending owner has
+  waited longest since their approval record was created; past 24h it
+  surfaces a warning on that ticket's expanded row.
+- **Connection Code** (`ConnectionCodeDialog.jsx` /
+  `GET /api/catalog/{id}/connection`): once approved, this is as far as
+  the app goes - it hands back the target database's connection details
+  (`db_type`/`db_host`/`db_port`/`db_schema`) for the user to connect
+  with their own tools. The app never queries the real underlying
+  business data itself (see HANDOFF.md's semantic-layer scope notes).
 
 ### Getting an image onto the air-gapped network
 
@@ -260,7 +316,7 @@ just the *where*.
   row outside the declared semantic model (`../wren/project/`) - this is
   what `chat.py`'s `resolve_via_semantic_layer()` uses for
   zero-hallucination data-subject matching.
-- `tests/` — the pytest suite (42 tests), one file per module above.
+- `tests/` — the pytest suite (44 tests), one file per module above.
 
 **Frontend** (`frontend/src/`):
 - `App.jsx` — top-level state (lang, theme, current view, cart, tickets)
