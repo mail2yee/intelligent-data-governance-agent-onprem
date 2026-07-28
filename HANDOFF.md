@@ -409,8 +409,34 @@ knows exactly where things stand:
   the process: an unused, incorrectly-typed `get_session()` function in
   `db.py` was dead code (removed, not fixed - nothing called it) and a
   nested-`with` simplification in `llm_client.py`.
-- Backend: a real pytest suite exists now (`backend/tests/`, 44 tests as
-  of the WrenAI addition, see `backend/README.md` for how to run it)
+- **Bug + coverage review (2026-07-29):** ran `pytest --cov=app` (new
+  `pytest-cov` dev dependency) to actually check test completeness
+  instead of relying on impression. Found and fixed one real bug:
+  `wrenai_client.py`'s `sync_catalog()`/`_search_text()` used
+  `item.get(field, "")`, whose default only applies when a key is
+  *missing* - a key present with value `None` (plausible for a real,
+  unset DataHub customProperty) produced the literal string `"None"` via
+  `str(None)`, silently polluting `search_text` and the stored field.
+  Fixed with a `_field()` helper (`item.get(field) or ""`); regression
+  test added. Also closed several real coverage gaps: `_extract_sql()`'s
+  markdown-fence stripping was never tested despite real LLMs actually
+  triggering it; two `run_chat()` double-failure edge cases (no LLM +
+  no local keyword match; semantic-layer failure + text-fallback also
+  says no match) weren't verified to still report zero-hallucination
+  correctly; `/api/catalog` and `/api/chat` had zero direct HTTP-level
+  test coverage (every test either called `run_chat()` directly or hit
+  `/api/catalog` only as a ticket-creation side effect); `llm_client.py`
+  was 18% covered - its real SSE-parsing logic had never been exercised,
+  only ever mocked out by callers, now covered via `httpx.MockTransport`
+  (no new dependency). Coverage went 78% → 86% overall,
+  `chat.py`/`llm_client.py` now 100%. Remaining gaps are documented in
+  `backend/README.md`'s testing section as either genuinely hard to
+  close without live infra (Camunda OAuth, DataHub's real GraphQL
+  parsing, WrenAI's real engine execution) or a `coverage.py`
+  measurement artifact with async SQLAlchemy/FastAPI's `lifespan`, not
+  real gaps.
+- Backend: a real pytest suite exists now (`backend/tests/`, 60 tests as
+  of the coverage review above, see `backend/README.md` for how to run it)
   covering `chat.py` (greetings, LLM success/failure streaming, local
   fallback matching, the semantic-layer verification/fallback chain), the
   full ticket/approval API and state machine, and all three integration

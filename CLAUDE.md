@@ -22,7 +22,7 @@ things left off.
   (GraphQL) integrations with graceful fallback to mocks on failure,
   plus WrenAI (embedded Python library, not a service) as a
   zero-hallucination semantic layer for chat.py's data-subject matching.
-- Backend: `ruff` + `mypy` clean, 44 pytest tests (`backend/tests/`) plus
+- Backend: `ruff` + `mypy` clean, 60 pytest tests (`backend/tests/`) plus
   a separate DeepEval-based LLM-judge eval suite (`backend/evals/`, not
   part of a bare `pytest` run - see `backend/README.md`'s "Evals"
   section). Frontend: `oxlint` clean, 29 vitest tests. All pass.

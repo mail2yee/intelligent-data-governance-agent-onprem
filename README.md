@@ -316,7 +316,7 @@ just the *where*.
   row outside the declared semantic model (`../wren/project/`) - this is
   what `chat.py`'s `resolve_via_semantic_layer()` uses for
   zero-hallucination data-subject matching.
-- `tests/` — the pytest suite (44 tests), one file per module above.
+- `tests/` — the pytest suite (60 tests), one file per module above.
 
 **Frontend** (`frontend/src/`):
 - `App.jsx` — top-level state (lang, theme, current view, cart, tickets)
