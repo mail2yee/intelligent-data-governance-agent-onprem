@@ -63,6 +63,10 @@ else is scored against a deliberately low floor, documented in
 HANDOFF.md alongside the known keyword-precision limitation it's meant
 to catch a regression against, not paper over.
 
+Runs worth keeping a record of (e.g. after a real change to the chat/
+WrenAI code, judge model, or trial count) get appended to `evals/EVAL_LOG.md`
+- not every ad-hoc local run, just ones worth comparing against later.
+
 ## What's implemented vs. stubbed
 
 - `/health`, `/api/catalog`, `/api/catalog/{id}/connection` (falls back to
