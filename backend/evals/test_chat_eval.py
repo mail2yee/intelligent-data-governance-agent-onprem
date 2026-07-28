@@ -5,9 +5,8 @@ NOT part of the fast `pytest` suite in tests/ (pyproject.toml's
 `testpaths = ["tests"]` already excludes this directory from a bare
 `pytest` run - this must be invoked explicitly: `pytest evals/`).
 Deliberately separate because this hits the real, running Docker Compose
-stack (real Postgres, real WrenAI, real Ollama) - slow, non-deterministic,
-and requires local setup (`docker compose up`, a local Ollama with a judge
-model pulled), unlike tests/'s fast, fully-mocked, SQLite-backed suite.
+stack and a real LLM judge - slow, non-deterministic, and requires local
+setup, unlike tests/'s fast, fully-mocked, SQLite-backed suite.
 
 Honest framing, same as the sibling agent_mem0_poc repo's eval harness:
 this is a repeatable *signal*, not a certified quality gate. LLM output is
@@ -16,15 +15,26 @@ are aggregated into a pass rate rather than asserted trial-by-trial. The
 PASS_RATE_FLOOR below is deliberately set low (see its comment) - it's
 meant to catch a genuine regression (something breaking further), not to
 claim the current ~50-65% keyword-precision reliability documented in
-HANDOFF.md is good enough.
+HANDOFF.md is good enough (that number is from a local Ollama model - it
+is expected to change once run against a real production LLM, which is
+the actual point of running this at the office).
+
+The judge model uses DeepEval's `LocalModel` - a generic OpenAI-compatible
+client (same assumption as this app's own `app/integrations/llm_client.py`),
+not anything Ollama-specific. That means the exact same DGO_EVAL_JUDGE_*
+env vars below work whether you're pointing it at a local Ollama (for
+testing this suite itself) or the company's real on-prem LLM gateway
+(the actual reason to run this) - only the values change, not the code.
 
 Setup:
     pip install -r requirements-eval.txt
     docker compose up -d --build          # real stack must be running
-    ollama pull qwen2.5:latest             # or whatever DGO_EVAL_JUDGE_MODEL is
+    # Point DGO_EVAL_JUDGE_* (see below) at whichever OpenAI-compatible
+    # endpoint you want to use as the judge - a local Ollama for trying
+    # the suite out, or the real company gateway to actually evaluate it.
 
 Run:
-    DGO_API_BASE_URL=http://localhost:8000 pytest evals/ -v -s
+    DGO_EVAL_JUDGE_MODEL=<model> DGO_EVAL_JUDGE_BASE_URL=<url> pytest evals/ -v -s
 """
 
 import json
@@ -35,15 +45,19 @@ import pytest
 from deepeval import evaluate
 from deepeval.evaluate.configs import AsyncConfig, DisplayConfig
 from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric, GEval
-from deepeval.models import OllamaModel
+from deepeval.models import LocalModel
 from deepeval.test_case import LLMTestCase, SingleTurnParams
 
 from app.integrations.datahub_client import MOCK_CATALOG
 from evals.golden_queries import GOLDEN_QUERIES
 
 API_BASE_URL = os.environ.get("DGO_API_BASE_URL", "http://localhost:8000")
+# Defaults below are for trying this suite out against a local Ollama -
+# swap all three for the company's real gateway to actually evaluate it
+# (see backend/README.md's "Evals" section).
 JUDGE_MODEL_NAME = os.environ.get("DGO_EVAL_JUDGE_MODEL", "qwen2.5:latest")
-JUDGE_OLLAMA_BASE_URL = os.environ.get("DGO_EVAL_OLLAMA_BASE_URL", "http://localhost:11434")
+JUDGE_BASE_URL = os.environ.get("DGO_EVAL_JUDGE_BASE_URL", "http://localhost:11434/v1")
+JUDGE_API_KEY = os.environ.get("DGO_EVAL_JUDGE_API_KEY", "")
 N_TRIALS = int(os.environ.get("DGO_EVAL_TRIALS", "3"))
 
 # Deliberately low - see module docstring. Today's known reliability
@@ -61,8 +75,11 @@ for _gq in GOLDEN_QUERIES:
     )
 
 
-def _judge() -> OllamaModel:
-    return OllamaModel(model=JUDGE_MODEL_NAME, base_url=JUDGE_OLLAMA_BASE_URL)
+def _judge() -> LocalModel:
+    # LocalModel requires a non-empty api_key even against an endpoint
+    # that doesn't check it (e.g. a local Ollama) - "not-needed" is a
+    # placeholder, not a real credential.
+    return LocalModel(model=JUDGE_MODEL_NAME, base_url=JUDGE_BASE_URL, api_key=JUDGE_API_KEY or "not-needed")
 
 
 async def _run_chat(message: str, lang: str) -> dict:

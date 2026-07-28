@@ -1,5 +1,8 @@
 # Only needed for backend/evals/ (DeepEval-based LLM-judge eval suite,
 # see that directory's docstring) - not a runtime dependency of the app
-# itself, and not needed for the fast tests/ suite either.
+# itself, and not needed for the fast tests/ suite either. The judge uses
+# DeepEval's LocalModel (generic OpenAI-compatible client, via the
+# `openai` package it already depends on) - no Ollama-specific package
+# needed, works against any OpenAI-compatible endpoint including the
+# company's real on-prem LLM gateway.
 deepeval
-ollama

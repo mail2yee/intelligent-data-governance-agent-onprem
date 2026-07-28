@@ -61,7 +61,7 @@ decisions across manually; do not try to build a compatibility layer.
 
 | Concern | GCP PoC | This repo |
 |---|---|---|
-| LLM | Gemini via `google-genai`, streamed via SSE | On-prem model, assumed **OpenAI-compatible** `POST /v1/chat/completions` with `stream: true` (see `backend/app/integrations/llm_client.py`) — **unconfirmed**, adjust if the real endpoint shape differs |
+| LLM | Gemini via `google-genai`, streamed via SSE | On-prem model, assumed **OpenAI-compatible** `POST /v1/chat/completions` with `stream: true` (see `backend/app/integrations/llm_client.py`) — confirmed this shape works against a real local Ollama (2026-07-28), but the **company's actual gateway is still unconfirmed** (a different endpoint) — adjust `llm_client.py` if its real shape differs |
 | Workflow engine | Camunda SaaS (`login.cloud.camunda.io`), fire-and-forget, not really wired to approval state | Camunda **self-managed** (on-prem), real `pyzeebe` client wired in (see `backend/app/integrations/camunda_client.py`) — but no BPMN process is deployed yet (confirmed with the user), so it currently fails gracefully every time until one exists. `CAMUNDA_PROCESS_ID` in `.env` is the only thing to change once it does. |
 | Data catalog | Dataplex (GCP) | DataHub GraphQL API, real client wired in (see `backend/app/integrations/datahub_client.py`) — assumes `maturity_level`/`data_quality_score`/etc. live as DataHub *customProperties* (confirmed assumption with the user) and derives each product's `id` by slugifying its DataHub display name. Falls back to the same hardcoded mock catalog as the GCP PoC if DataHub is unreachable or returns nothing. |
 | Ticket storage | Firestore | PostgreSQL (see `backend/app/db.py`) |
@@ -452,3 +452,24 @@ knows exactly where things stand:
 - CI - intentionally NOT GitHub Actions. Company uses internal CI/CD
   (Azure DevOps) - pipeline should be built there when that's next up,
   not `.github/workflows/`.
+- **Point both the app and the eval suite at the company's real on-prem
+  LLM gateway, at the office.** Everything LLM-related so far (the
+  OpenAI-compatible shape confirmation, the `search_text`/keyword-
+  precision fixes, the DeepEval eval suite) was tested against a local
+  Ollama - useful for proving the mechanisms work, but the actual
+  numbers (matching reliability, eval pass rates) are expected to
+  change against the real gateway, which is the actual point of doing
+  this. Two separate places to point, not one:
+  1. The app itself: `backend/.env`'s `LLM_BASE_URL`/`LLM_MODEL`/
+     `LLM_API_KEY` (and optionally `LLM_SQL_MODEL`) - see that file's
+     comments in `.env.example`.
+  2. The eval judge: `DGO_EVAL_JUDGE_MODEL`/`DGO_EVAL_JUDGE_BASE_URL`/
+     `DGO_EVAL_JUDGE_API_KEY` when running `pytest evals/` - see
+     `backend/README.md`'s "Evals" section. Uses DeepEval's `LocalModel`
+     (generic OpenAI-compatible client, confirmed working
+     2026-07-28 against local Ollama with no Ollama-specific package
+     needed) so the same three env vars work for either a local model or
+     the real gateway - only the values change.
+  Record whatever the eval suite finds in `backend/evals/EVAL_LOG.md`
+  once run against the real thing - that's the actually useful number,
+  more than anything measured against a local Ollama stand-in.
