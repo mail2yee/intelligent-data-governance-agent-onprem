@@ -243,6 +243,37 @@ facts only reachable from inside the company network:
   small/local model in production, the semantic-layer verification step
   may need a retry-on-empty or a stricter SQL validation pass before
   trusting an empty result over a text match that already looks correct.
+- **Added a second, separately-configurable model for the SQL-generation
+  step** (`LLM_SQL_MODEL` in `.env`, `settings.llm_sql_model` in
+  `config.py`, threaded through `stream_chat_completion(messages, model=...)`
+  in `llm_client.py`) - lets `chat.py`'s prose reply and its SQL-writing
+  call use different models, on the theory that a tool-calling-tuned
+  model would be more reliable at the strict SQL syntax than a general
+  chat model. Blank (default) means "use `llm_model` for everything",
+  unchanged from before this setting existed.
+  **Tested against `llama3-groq-tool-use:8b` (tool-calling-tuned, ranks
+  well on the Berkeley Function Calling Leaderboard) vs. `qwen2.5:latest`
+  (general chat) for this specific step - no clear reliability
+  improvement observed** in repeated local testing; both landed around
+  the same ~50-65% correct rate. Diagnosed two concrete causes, neither
+  fixed by model choice alone:
+  1. **Traditional vs. Simplified Chinese mismatch** - the model
+     sometimes extracts a Simplified Chinese keyword (e.g. `产能`) for a
+     Traditional-Chinese catalog (`產能`); Postgres `ILIKE` does no
+     script folding, so this silently never matches. Needs either an
+     explicit prompt instruction to preserve the input's script, or
+     normalizing both sides before matching (e.g. OpenCC) - not done
+     yet.
+  2. **Overly generic extracted keywords** - e.g. extracting `客戶`
+     ("customer") alone matches most catalog entries, since most of
+     them mention a customer somewhere - this is what's causing the
+     `customer-demand-orders` false-positive seen repeatedly across
+     both models.
+  Bottom line: the two-model split is implemented and is a reasonable
+  thing to keep (a tool-calling model is very unlikely to be *worse* for
+  this), but it did not turn out to be the fix for the reliability gap
+  on its own - the two causes above are the more likely next things to
+  address, whenever this gets revisited.
 
 The "目錄維護"/Catalog Admin nav item is still a disabled placeholder
 (was in the PoC too — no catalog editing UI ever existed there either).

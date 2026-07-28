@@ -117,7 +117,7 @@ def _fake_stream_by_prompt(sql_reply, prose_reply="Some prose reply."):
     vs. the original prose-reply prompt, since run_chat now calls
     stream_chat_completion twice per successful turn."""
 
-    async def _fake(messages):
+    async def _fake(messages, model=None):
         prompt = messages[0]["content"]
         if "Write ONE SQL" in prompt:
             yield sql_reply
@@ -147,6 +147,34 @@ async def test_run_chat_semantic_layer_verified_match_overrides_text_match(monke
 
     events = await _collect_events(run_chat("need a report", "en", CATALOG))
     assert events[-1]["matched_products"] == ["move-forecast-summary"]
+
+
+async def test_run_chat_semantic_layer_uses_llm_sql_model_when_configured(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "llm_sql_model", "llama3-groq-tool-use:8b")
+    models_seen = []
+
+    async def _fake(messages, model=None):
+        prompt = messages[0]["content"]
+        models_seen.append(model)
+        if "Write ONE SQL" in prompt:
+            yield "SELECT id, name FROM data_products WHERE id = 'move-forecast-summary'"
+        else:
+            yield "Some prose reply."
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _fake)
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    async def _fake_resolve(sql):
+        return [{"id": "move-forecast-summary", "name": "FAB Production Move Forecast Summary"}]
+
+    monkeypatch.setattr("app.chat.wrenai_client.resolve_matches", _fake_resolve)
+
+    await _collect_events(run_chat("need a report", "en", CATALOG))
+    # First call (prose reply) uses the default model (None -> settings.llm_model);
+    # second call (SQL generation) is explicitly routed to the configured SQL model.
+    assert models_seen == [None, "llama3-groq-tool-use:8b"]
 
 
 async def test_run_chat_semantic_layer_no_match_short_circuits_before_wrenai(monkeypatch):

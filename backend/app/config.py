@@ -9,6 +9,13 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://localhost:8001/v1"
     llm_model: str = "gemma"
     llm_api_key: str = ""
+    # Optional second model, used only for chat.py's SQL-generation call
+    # (resolve_via_semantic_layer) - a tool-calling/structured-output-tuned
+    # model tends to be far more reliable at that than a general chat
+    # model (confirmed testing locally: qwen2.5 struggled with strict SQL
+    # syntax for this step). Empty means "use llm_model for everything",
+    # same as before this setting existed.
+    llm_sql_model: str = ""
 
     camunda_gateway_address: str = "localhost:26500"
     # No BPMN process is deployed yet (confirmed with the user) - this is a

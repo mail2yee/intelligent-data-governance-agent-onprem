@@ -7,6 +7,7 @@ stream via the same step/token/final SSE event shape.
 import json
 from collections.abc import AsyncIterator
 
+from .config import settings
 from .integrations import wrenai_client
 from .integrations.llm_client import stream_chat_completion
 
@@ -140,7 +141,8 @@ async def resolve_via_semantic_layer(user_msg: str, catalog: dict) -> list[str]:
     """
     sql_reply = ""
     async for piece in stream_chat_completion(
-        [{"role": "user", "content": build_sql_prompt(user_msg, catalog)}]
+        [{"role": "user", "content": build_sql_prompt(user_msg, catalog)}],
+        model=settings.llm_sql_model or None,
     ):
         sql_reply += piece
     sql = _extract_sql(sql_reply)
