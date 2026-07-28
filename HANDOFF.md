@@ -264,14 +264,24 @@ verified end-to-end there against a real Postgres, including confirming
   air-gapped-network landmine beyond PyPI/npm/Docker Hub, on top of
   everything already documented above about building at home). See the
   comment in `backend/Dockerfile`.
-- **Not yet verified:** this has been smoke-tested locally (a real
-  `wren context build` + governed query against a throwaway DuckDB table,
-  outside this repo) and the existing pytest suite covers `sync_catalog()`
-  and the fallback-on-failure behavior, but it has **not** been run
-  end-to-end inside this repo's actual `docker compose up --build` yet
-  (i.e. `backend/entrypoint.sh`'s `wren profile add` + `wren context
-  build` against the real backend Postgres, then a real governed query
-  through the running container). Do that before considering this done.
+- **Verified end-to-end in this repo's actual Docker Compose stack
+  (2026-07-28):** `docker compose up --build` (with `platform: linux/amd64`
+  forced on the backend service - see docker-compose.yml, needed on
+  Apple Silicon dev machines since `wren-core-py` has no linux/aarch64
+  wheel) - `backend/entrypoint.sh`'s `wren profile add` + `wren context
+  build` both succeeded against the real backend Postgres container, and
+  a real governed query through the running container returned correct
+  rows for a valid query and correctly rejected (`WrenError
+  [GENERIC_USER_ERROR] column "made_up_column" does not exist`) an
+  invalid one. Also confirmed via the actual Discover UI: with no real
+  LLM gateway configured, the first LLM call fails as expected and falls
+  back to `local_rule_match()`, which still returned the correct product
+  card - the full graceful-degradation chain works as designed. Not yet
+  confirmed: the semantic-layer verification path *specifically* (the
+  LLM writing SQL, `resolve_via_semantic_layer()`) against a real LLM
+  gateway, since none is configured yet - only the WrenAI/governed-engine
+  half was exercised directly (via a manual `docker compose exec` check),
+  not through a real two-LLM-call chat turn.
 
 ## Engineering standards / tests — IN PROGRESS as of this commit
 

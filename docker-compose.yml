@@ -32,6 +32,13 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    # Forced to amd64: wrenai's Rust engine (wren-core-py) has no prebuilt
+    # wheel for linux/aarch64 (see backend/Dockerfile's comment) - without
+    # this, building on Apple Silicon would try to compile it from source
+    # and fail (no Rust toolchain here on purpose). Runs under QEMU
+    # emulation on arm64 dev machines - slower to build/start, but this is
+    # also the real target platform for the company's (x86_64) servers.
+    platform: linux/amd64
     env_file:
       - ./backend/.env
     environment:
