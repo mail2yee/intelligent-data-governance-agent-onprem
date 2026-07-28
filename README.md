@@ -22,6 +22,78 @@ Camunda), and what business logic / UI direction to carry over.
 
 **怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗）——裡面預設值是假的 LLM/Camunda/DataHub 端點，先用預設值就能跑起來看 fallback 行為，之後知道真實內網端點再回來改。接著本機（家裡）直接 `docker compose up --build` 就能跑。公司內網因為連不到 PyPI/npm，第一步應該先直接在公司試同一條指令——如果內網本身有設定 registry mirror 可能就直接通了；如果 `pip install`/`npm ci` 卡住，才需要退回「家裡先 build 好 image，想辦法弄進公司內網」這條路——內部 registry，或是已經 build+push 好、設成 public 的 GHCR image（`docker compose pull` 不用登入就能拉，只差公司防火牆連不連得到 `ghcr.io` 這個網域還沒實測）。完整決策流程、指令、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
 
+## 到公司後怎麼做（照順序，一步一步）
+
+這節是給你到公司當場照著做的清單，不用跳來跳去查其他章節。每一步都寫了「怎麼知道這步成功了」。
+
+**Step 0 — 拿程式碼**
+
+兩種方式，差在「之後能不能自動同步」：
+
+- **`git clone`（推薦）**：需要先建一個 GitHub PAT（Settings → Developer settings → Personal access tokens → Tokens (classic)，勾 `repo` 權限就好，read 即可）。這樣才能之後 `git pull` 拿更新，也才能用 `scripts/collect-debug-log.sh` 自動把診斷結果 commit + push 回來給我看。
+  ```bash
+  git clone https://github.com/mail2yee/intelligent-data-governance-agent-onprem.git
+  cd intelligent-data-governance-agent-onprem
+  ```
+- **GitHub 網頁「Download ZIP」解壓縮**：不用設定 git 帳密，簡單，但拿到的資料夾沒有 `.git`——之後沒辦法 `git pull`、也沒辦法自動 push 診斷結果，要手動複製貼上回來給我。
+
+**Step 1 — 建立設定檔（必須，否則連啟動都會失敗）**
+```bash
+cp backend/.env.example backend/.env
+```
+先不改內容也能跑（會用假的 LLM/Camunda/DataHub 端點，你會看到 fallback 行為，例如搜尋會退回本地關鍵字比對）——這是正常的，不是壞掉，Step 5 再回來接公司真實的 LLM。
+
+**Step 2 — 第一次嘗試：直接在公司 build**
+```bash
+docker compose up --build
+```
+這行同時測試三件事：base image（`python:3.11-slim`/`node:20-alpine` 等）拉不拉得到、`pip install` 走不走得到 PyPI mirror、`npm ci` 走不走得到 npm mirror。**如果這行成功，直接跳到 Step 4**，不用管 Step 3。
+
+**Step 3 — 如果 Step 2 失敗（`pip install`/`npm ci` 卡住）：改拉已經 build 好的 image**
+```bash
+docker compose pull
+docker compose up -d
+```
+`backend`/`frontend` 這兩個 image 已經 build 好、push 到 `ghcr.io` 並設成 public（2026-07-28 已驗證，不用登入就能拉）——**這步真正在測的是公司防火牆連不連得到 `ghcr.io` 這個網域**（`github.com` 已知連得到，但 `ghcr.io` 是不同網域，沒實測過）。`postgres` 那個 image 走 Docker Hub，理論上公司內部的 Docker image mirror 會處理（HANDOFF.md 有記錄這個 mirror 存在），如果連這行都失敗，代表這個假設也要重新確認。
+
+如果 Step 3 也失敗：先不要繼續往下試，跳到最下面「有問題怎麼辦」那段，把診斷結果帶回來，我們再一起想下一步（可能是內部 registry、或者我在家 `docker save`/`docker load` 傳檔案過去）。
+
+**Step 4 — 確認真的跑起來了**
+```bash
+curl http://localhost:8000/health   # 應該回傳 {"status":"ok"}
+```
+瀏覽器打開 http://localhost:8080 應該看到「智慧資料治理平台」畫面，可以試著搜尋一句話看看（現在還沒接公司 LLM，會走 fallback，屬於正常現象）。
+
+**Step 5 — 接上公司真實的 LLM（如果你已經知道公司內部 gateway 的網址/model 名稱）**
+
+編輯 `backend/.env`，把這三行改成公司真實的值：
+```bash
+LLM_BASE_URL=<公司內部 LLM gateway 網址>/v1
+LLM_MODEL=<公司內部的 model 名稱>
+LLM_API_KEY=<如果 gateway 需要驗證的話，不需要就留空>
+```
+改完套用（不用重新 build，只要讓 container 重新讀取 `.env`）：
+```bash
+docker compose up -d --force-recreate backend
+```
+再回 Step 4 測一次搜尋，這次應該會真的呼叫公司的 LLM，不再是 fallback（可以從瀏覽器的「顯示思考過程」或 `docker compose logs backend` 觀察差異）。
+
+**Step 6（選用）— 跑 eval，看公司 model 表現怎麼樣**
+```bash
+pip install -r backend/requirements-eval.txt
+DGO_EVAL_JUDGE_MODEL=<公司 model 名稱> \
+DGO_EVAL_JUDGE_BASE_URL=<公司 gateway 網址>/v1 \
+DGO_EVAL_JUDGE_API_KEY=<如果需要> \
+pytest backend/evals/ -v -s
+```
+結果值得記錄的話，寫進 `backend/evals/EVAL_LOG.md`（跟本機用 Ollama 測出來的 0.50-1.00 分數對照，看真實的公司 model 表現如何）。細節見 `backend/README.md`「Evals」那節。
+
+**有問題怎麼辦：**
+```bash
+./scripts/collect-debug-log.sh
+```
+自動收集 git 狀態、docker/compose 版本、對 `github.com`/`ghcr.io`/Docker Hub/PyPI/npm 的連線測試、`docker compose config`/`pull`/`ps`/`logs`，做基本的密碼/token 遮蔽後印出來給你看，確認沒問題再問你要不要 commit + push（只有 Step 0 用 `git clone` 才能這樣自動回傳；用 ZIP 的話這個檔案還是會產生，只是最後要手動複製貼上內容給我，不是自動 push）。
+
 ## Status: full PoC UI ported, verified end-to-end
 
 - Backend (FastAPI + PostgreSQL) tested end-to-end against a real
