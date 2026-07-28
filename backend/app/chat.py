@@ -93,10 +93,23 @@ def build_sql_prompt(user_msg: str, catalog: dict) -> str:
     frequency, tables_joined, db_type, db_host, db_port, db_schema.
     It currently has rows for exactly these ids: {ids}
 
+    The user's request is: "{user_msg}"
+
+    First, extract 2-4 short keywords or synonyms from the request (in
+    the same language as the request) - never use the entire sentence
+    as a match pattern, catalog text is short and a full-sentence
+    substring will essentially never match it.
+
     Write ONE SQL SELECT statement, selecting only the `id` and `name`
-    columns from `data_products`, that finds the row(s) matching this
-    request: "{user_msg}"
-    Use ILIKE with '%...%' on name/description/tables_joined to match.
+    columns from `data_products`, using the standard SQL operator form
+    `column ILIKE '%keyword%'` (not a function-call form like
+    `ilike(col, pattern)`) - OR the keyword conditions together across
+    the name, description, and tables_joined columns.
+
+    Example shape only (do not reuse "capacity", extract your own
+    keywords from the actual request above):
+    SELECT id, name FROM data_products WHERE name ILIKE '%capacity%' OR description ILIKE '%capacity%' OR tables_joined ILIKE '%capacity%'
+
     If nothing in the table plausibly matches, reply with exactly:
     NO_MATCH
     Reply with the SQL (or NO_MATCH) only - no explanation, no markdown

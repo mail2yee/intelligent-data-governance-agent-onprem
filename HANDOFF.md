@@ -207,8 +207,42 @@ facts only reachable from inside the company network:
   types. Check the query in `datahub_client.py` against your instance's
   GraphQL schema explorer (usually `{DATAHUB_API_URL}/api/graphiql`) and
   adjust if it doesn't match.
-- LLM client's OpenAI-compatible assumption is still unconfirmed against
-  the real on-prem gateway.
+- **LLM client's OpenAI-compatible assumption is now confirmed working
+  against a real endpoint (2026-07-28)** - tested against the user's own
+  local Ollama (`http://host.docker.internal:11434/v1`, from inside the
+  Docker container - note `localhost` inside the container is the
+  container itself, not the host Mac, so `host.docker.internal` is
+  required for this specific local-dev setup, not a company-gateway
+  concern). Ollama's `/v1/chat/completions` streams the exact
+  `data: {"choices":[{"delta":{"content":...}}]}` /
+  `data: [DONE]` shape `llm_client.py` already expects - real reply text
+  streamed correctly end-to-end through the Discover UI. Still
+  unconfirmed: whether the real company on-prem gateway matches this
+  same shape (Ollama is one concrete OpenAI-compatible implementation,
+  not proof every on-prem gateway looks the same).
+- **Found and fixed a real reliability gap in the semantic-layer SQL
+  prompt** (`build_sql_prompt()` in `chat.py`) while testing against
+  Ollama: the LLM would sometimes paste the user's entire sentence into
+  a single `ILIKE '%...%'` pattern (which a short catalog description
+  will essentially never contain as a substring) and sometimes emit a
+  non-standard function-call form (`ilike(col, pattern)`) instead of the
+  standard operator form. Fixed by explicitly instructing the model to
+  extract 2-4 keywords first and giving a concrete example of the
+  expected operator syntax. **Still not fully reliable with small local
+  models** - repeated testing with `qwen2.5:latest` (7B) after the fix
+  showed roughly 2/3 correct (right product matched, sometimes with one
+  extra false-positive product included) and 1/3 reverting to "no match"
+  even when the free-text reply correctly named the right product;
+  `qwen3:14b` (14B) showed the same false-positive pattern and was
+  noticeably slower. This mirrors exactly what the sibling
+  `agent_mem0_poc` repo's README already documented about small local
+  models struggling with strict structured-output tasks - not a bug
+  specific to this integration, a known limitation of testing against
+  small local models rather than a properly-sized production LLM. Revisit
+  reliability once pointed at the real company gateway; if it's also a
+  small/local model in production, the semantic-layer verification step
+  may need a retry-on-empty or a stricter SQL validation pass before
+  trusting an empty result over a text match that already looks correct.
 
 The "目錄維護"/Catalog Admin nav item is still a disabled placeholder
 (was in the PoC too — no catalog editing UI ever existed there either).
