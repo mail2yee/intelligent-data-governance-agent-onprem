@@ -90,6 +90,17 @@ _SEARCHABLE_FIELDS = ("name", "description", "tables_joined")
 _TRADITIONAL_TO_SIMPLIFIED = opencc.OpenCC("t2s")
 
 
+def _field(item: dict, field: str) -> str:
+    """`item.get(field, "")` alone isn't enough: the default only kicks in
+    when the key is *missing*, not when it's present with value None (a
+    real possibility once this reads from actual DataHub customProperties
+    instead of the hardcoded mock catalog, where an unset optional field
+    is plausibly None rather than absent) - `str(None)` silently produces
+    the literal text "None", which would pollute search_text and any
+    ILIKE match against it."""
+    return str(item.get(field) or "")
+
+
 def _search_text(item: dict) -> str:
     """Traditional-Chinese catalog text, plus a Simplified-Chinese copy of
     the same text, concatenated - confirmed via local testing that a small
@@ -97,7 +108,7 @@ def _search_text(item: dict) -> str:
     for a Traditional-Chinese request (or vice versa), and plain ILIKE does
     no script folding, so a keyword in either script needs to be able to
     hit this column regardless of which script the source data is in."""
-    original = " ".join(str(item.get(field, "")) for field in _SEARCHABLE_FIELDS)
+    original = " ".join(_field(item, field) for field in _SEARCHABLE_FIELDS)
     return f"{original} {_TRADITIONAL_TO_SIMPLIFIED.convert(original)}"
 
 
@@ -113,7 +124,7 @@ async def sync_catalog(catalog: dict) -> None:
         seen: set[str] = set()
         for product_id, item in catalog.items():
             seen.add(product_id)
-            values = {field: str(item.get(field, "")) for field in _CATALOG_FIELDS}
+            values = {field: _field(item, field) for field in _CATALOG_FIELDS}
             values["search_text"] = _search_text(item)
             if product_id in existing:
                 for field, value in values.items():

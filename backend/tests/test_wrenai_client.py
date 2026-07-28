@@ -41,6 +41,19 @@ async def test_sync_catalog_inserts_rows():
     assert rows["move-forecast-summary"].owner == ""
 
 
+async def test_sync_catalog_treats_explicit_none_as_empty_string():
+    # A key that's *present* with value None (plausible for a real
+    # DataHub customProperty that's simply unset) is a different case
+    # from a *missing* key - dict.get(field, "") only covers the latter.
+    # str(None) would otherwise silently store the literal text "None".
+    catalog = {"p1": {"name": "Foo", "description": None, "owner": None}}
+    await wrenai_client.sync_catalog(catalog)
+    rows = await _all_products()
+    assert rows["p1"].description == ""
+    assert rows["p1"].owner == ""
+    assert "None" not in rows["p1"].search_text
+
+
 async def test_search_text_converts_traditional_chinese_to_simplified():
     catalog = {
         "p1": {

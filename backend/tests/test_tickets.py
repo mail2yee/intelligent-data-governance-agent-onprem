@@ -18,6 +18,56 @@ async def test_health(client):
     assert res.json() == {"status": "ok"}
 
 
+async def test_get_catalog(client, monkeypatch):
+    # The route handler itself (app.main.get_catalog) had zero direct HTTP-
+    # level coverage before this - every other test only exercises it as a
+    # side effect of ticket creation, never GETs /api/catalog directly.
+    await _mock_catalog(monkeypatch, {"p1": {"id": "p1", "name": "Product One"}})
+    res = await client.get("/api/catalog")
+    assert res.status_code == 200
+    assert res.json() == {"p1": {"id": "p1", "name": "Product One"}}
+
+
+async def test_chat_endpoint_streams_sse(client, monkeypatch):
+    # chat.py's run_chat() generator is unit-tested extensively elsewhere
+    # (test_chat.py), but never before through the actual HTTP route -
+    # this exercises app.main.chat()'s own logic: JSON body parsing, the
+    # lang default, and the StreamingResponse/SSE headers.
+    await _mock_catalog(monkeypatch, {"p1": {"id": "p1", "name": "Product One"}})
+
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog):
+        captured["user_msg"] = user_msg
+        captured["lang"] = lang
+        captured["catalog"] = catalog
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    res = await client.post("/api/chat", json={"message": "hello there"})
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/event-stream")
+    assert '"reply": "ok"' in res.text
+    assert captured["user_msg"] == "hello there"
+    assert captured["lang"] == "zh"  # defaults to zh when "lang" is omitted
+    assert captured["catalog"] == {"p1": {"id": "p1", "name": "Product One"}}
+
+
+async def test_chat_endpoint_respects_explicit_en_lang(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {})
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog):
+        captured["lang"] = lang
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    await client.post("/api/chat", json={"message": "hi", "lang": "en"})
+    assert captured["lang"] == "en"
+
+
 async def test_create_and_list_ticket(client, monkeypatch):
     await _mock_catalog(
         monkeypatch,

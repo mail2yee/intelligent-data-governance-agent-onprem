@@ -5,6 +5,7 @@ import pytest
 from app.chat import (
     GREETING_REPLY,
     NOT_FOUND_REPLY,
+    _extract_sql,
     is_greeting,
     local_rule_match,
     run_chat,
@@ -41,6 +42,20 @@ def test_sse_event_format():
     assert event.endswith("\n\n")
     payload = json.loads(event[len("data: ") :].strip())
     assert payload == {"type": "step", "text": "hello"}
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("SELECT id FROM data_products", "SELECT id FROM data_products"),
+        ("SELECT id FROM data_products;", "SELECT id FROM data_products"),
+        ("```sql\nSELECT id FROM data_products\n```", "SELECT id FROM data_products"),
+        ("```\nSELECT id FROM data_products\n```", "SELECT id FROM data_products"),
+        ("NO_MATCH", "NO_MATCH"),
+    ],
+)
+def test_extract_sql(raw, expected):
+    assert _extract_sql(raw) == expected
 
 
 def test_local_rule_match_capacity_zh():
@@ -105,6 +120,24 @@ async def test_run_chat_llm_failure_falls_back_to_local_match(monkeypatch):
     assert final["matched_products"] == ["customer-capacity-allocation"]
     step_texts = [e["text"] for e in events if e["type"] == "step"]
     assert any("降級" in t for t in step_texts)
+
+
+async def test_run_chat_llm_failure_and_no_local_match_still_reports_zero_hallucination(monkeypatch):
+    # Both fallback layers come up empty: the first LLM call fails outright
+    # (falls back to local_rule_match), and local_rule_match itself finds
+    # no keyword match either - matched_products must end up [] with the
+    # zero-hallucination step emitted, not silently skipped.
+    async def _broken_stream(messages):
+        raise ConnectionError("no route to host")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _broken_stream)
+
+    events = await _collect_events(run_chat("random unrelated question", "en", CATALOG))
+    final = events[-1]
+    assert final["matched_products"] == []
+    step_texts = [e["text"] for e in events if e["type"] == "step"]
+    assert any("Zero Hallucination" in t for t in step_texts)
 
 
 async def _noop_sync(catalog):
@@ -218,3 +251,29 @@ async def test_run_chat_semantic_layer_failure_falls_back_to_text_match(monkeypa
     assert final["matched_products"] == ["customer-capacity-allocation"]
     step_texts = [e["text"] for e in events if e["type"] == "step"]
     assert any("Semantic layer verification failed" in t for t in step_texts)
+
+
+async def test_run_chat_semantic_layer_failure_and_text_says_no_match(monkeypatch):
+    # Semantic layer verification also fails here, but this time the
+    # text-matching fallback it falls back to independently agrees
+    # there's no match - matched_products must end up [], not whatever
+    # the (never-verified) SQL reply implied.
+    monkeypatch.setattr(
+        "app.chat.stream_chat_completion",
+        _fake_stream_by_prompt(
+            sql_reply="SELECT id FROM data_products WHERE id = 'customer-capacity-allocation'",
+            prose_reply="Sorry, no data subject in our catalog matches your request.",
+        ),
+    )
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    async def _boom(sql):
+        raise RuntimeError("MDL not built")
+
+    monkeypatch.setattr("app.chat.wrenai_client.resolve_matches", _boom)
+
+    events = await _collect_events(run_chat("capacity please", "en", CATALOG))
+    final = events[-1]
+    assert final["matched_products"] == []
+    step_texts = [e["text"] for e in events if e["type"] == "step"]
+    assert any("Zero Hallucination" in t for t in step_texts)

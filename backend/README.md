@@ -22,11 +22,12 @@ app itself will still start.
 ## Linting, type checking, tests
 
 ```bash
-pip install -r requirements-dev.txt   # adds ruff, mypy, pytest on top of requirements.txt
+pip install -r requirements-dev.txt   # adds ruff, mypy, pytest, pytest-cov on top of requirements.txt
 ruff check app/ tests/                # lint
 ruff format app/ tests/               # format
 mypy app/                             # type check
 pytest -v                             # run the test suite
+pytest --cov=app --cov-report=term-missing   # same, plus a per-file coverage report
 ```
 
 Config for all four lives in `pyproject.toml`. Tests run against a
@@ -35,6 +36,30 @@ docstring at the top of `tests/conftest.py` for why, and the tradeoff
 that implies (nothing here relies on Postgres-specific SQL, so this is
 fine for testing application logic, not a substitute for testing against
 real Postgres if that ever becomes necessary).
+
+As of 2026-07-29, coverage is 86% overall; `chat.py`/`config.py`/
+`llm_client.py` are 100%. Most of the remaining gaps are deliberate, not
+oversights: `camunda_client.py`'s OAuth channel-building path and
+`datahub_client.py`'s real GraphQL response parsing are only exercised
+via mocked fallback behavior, not a real (or fake) server - there's
+nothing to point them at yet. `wrenai_client.py`'s real `WrenEngine`
+execution path needs a built MDL + live Postgres, which is why it's only
+verified manually (`docker compose exec`, see HANDOFF.md) rather than in
+this fast/mocked suite. `main.py`'s `lifespan()` and `db.py`'s `init_db()`
+show as uncovered even though they run in real use (verified via Docker
+logs) - httpx's `ASGITransport` (used by `tests/conftest.py`'s `client`
+fixture) doesn't trigger FastAPI's lifespan by default, a known artifact
+of the test harness, not a real gap.
+
+A few other lines inside `create_ticket`/`list_tickets`/`submit_approval`
+also show as "uncovered" despite being directly exercised with real
+assertions in `test_tickets.py` (e.g. `test_approve_all_owners_moves_ticket_to_approved`
+asserts on the exact status-derivation lines coverage.py flags) - this
+looks like a `coverage.py` instrumentation quirk with SQLAlchemy's async
+ORM (which bridges to its sync core via `greenlet` internally,
+regardless of driver), not a real testing gap. Confirmed by reading the
+tests, not just trusting the percentage - don't take this number as
+gospel without checking what a "missing" line actually does first.
 
 ## Evals (DeepEval + a configurable LLM judge)
 
