@@ -204,8 +204,21 @@ connection and fail gracefully (falling back to the mock catalog / a
 real Postgres + a real (unreachable, as expected) gateway/endpoint, not
 just import-checked. What's still open, because it genuinely needs
 facts only reachable from inside the company network:
-- No BPMN process is deployed yet — `CAMUNDA_PROCESS_ID` in `.env` is a
-  placeholder. Deploy one, point `.env` at it, done — no code change.
+- **Not connected right now, by design — clarified 2026-07-29 in
+  response to a direct question about this.** `docker-compose.yml` has
+  no Camunda service at all (only `postgres`/`backend`/`frontend`); no
+  self-managed Camunda/Zeebe instance runs anywhere in this repo's
+  stack. Two `.env` values control it, and answer "which workflow runs":
+  `CAMUNDA_GATEWAY_ADDRESS` (host:port of the Zeebe gRPC gateway - where)
+  and `CAMUNDA_PROCESS_ID` (the BPMN process `id` to start - which
+  workflow; currently `data-gov-approval`, a placeholder that doesn't
+  match any deployed process yet). Every ticket creation attempts a real
+  connection using these two values and gets a graceful `"Skipped"`
+  status back, not an error, since nothing is listening. Making this
+  real needs three things together, none done yet: (1) an actual running
+  self-managed Camunda 8/Zeebe gateway reachable from wherever the
+  backend runs, (2) a BPMN process deployed to it, (3) both `.env`
+  values updated to match - no code change needed once those exist.
 - Camunda auth defaults to unauthenticated (`create_insecure_channel`).
   If it turns out Identity/Keycloak OAuth is required, the OAuth path in
   `camunda_client.py` is implemented but **untested against a live
