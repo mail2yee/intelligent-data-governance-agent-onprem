@@ -20,7 +20,7 @@ Camunda), and what business logic / UI direction to carry over.
 
 **程式碼在哪裡：** 後端邏輯全在 `backend/app/`——`main.py` 是所有 HTTP 路由和票單/簽核狀態機，`chat.py` 是聊天助理（打招呼快速回覆、zero-hallucination 提示詞、LLM 打不通時的本地關鍵字 fallback），`config.py` 集中管理所有環境變數，`db.py` 是資料庫 model，`integrations/` 底下三個檔案分別對應 LLM/Camunda/DataHub 三個外部串接。前端在 `frontend/src/`——`App.jsx` 管全域狀態，`api.js` 是所有後端呼叫（含手刻的 SSE 串流解析），`i18n.js` 管中英文字串，`components/` 底下一個檔案一個 UI 元件。完整逐檔案說明見下面「Code map」章節。
 
-**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗）——裡面預設值是假的 LLM/Camunda/DataHub 端點，先用預設值就能跑起來看 fallback 行為，之後知道真實內網端點再回來改。接著本機（家裡）直接 `docker compose up --build` 就能跑。公司內網因為連不到 PyPI/npm，第一步應該先直接在公司試同一條指令——如果內網本身有設定 registry mirror 可能就直接通了；如果 `pip install`/`npm ci` 卡住，才需要退回「家裡先 build 好 image，想辦法弄進公司內網」這條路（走內部 registry 或測試中的 GHCR 方案）。完整決策流程、指令、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
+**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗）——裡面預設值是假的 LLM/Camunda/DataHub 端點，先用預設值就能跑起來看 fallback 行為，之後知道真實內網端點再回來改。接著本機（家裡）直接 `docker compose up --build` 就能跑。公司內網因為連不到 PyPI/npm，第一步應該先直接在公司試同一條指令——如果內網本身有設定 registry mirror 可能就直接通了；如果 `pip install`/`npm ci` 卡住，才需要退回「家裡先 build 好 image，想辦法弄進公司內網」這條路——內部 registry，或是已經 build+push 好、設成 public 的 GHCR image（`docker compose pull` 不用登入就能拉，只差公司防火牆連不連得到 `ghcr.io` 這個網域還沒實測）。完整決策流程、指令、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
 
 ## Status: full PoC UI ported, verified end-to-end
 
@@ -97,7 +97,7 @@ flowchart TD
     A["office: git pull\ndocker compose up --build"] -->|works| Z["done - internal PyPI/npm\n+ image mirrors cover it"]
     A -->|"pip install / npm ci fails\n(no PyPI/npm mirror)"| B{"which pre-built\nimage path?"}
     B -->|"internal registry reachable"| C["home: docker compose build\ndocker save | ssh/copy to office\ndocker load, then docker compose up"]
-    B -->|"testing ghcr.io reachability"| D["home: docker compose build && push to ghcr.io\noffice: docker compose pull && up"]
+    B -->|"ghcr.io reachable from office?"| D["done: home already built+pushed to ghcr.io (public)\noffice: docker compose pull && up"]
 ```
 
 **Step 1 — just try it at the office first, before anything else:**
@@ -122,18 +122,23 @@ company network some other way. Two options, both untested so far:
   home, push there directly if reachable from home, or `docker save`
   the image to a tarball and carry/copy it over if not, then `docker
   load` on the office side.
-- **GHCR test path** (`ghcr.io`, since plain `github.com` is reachable
-  from the office): `docker-compose.yml`'s `backend`/`frontend` services
+- **GHCR path (`ghcr.io`) — publish side done and confirmed working
+  (2026-07-28):** `docker-compose.yml`'s `backend`/`frontend` services
   set `image:` to `ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`
-  alongside `build:`, so `docker compose build` tags for this and
-  `docker compose push` publishes it (after `docker login ghcr.io -u
-  mail2yee` with a PAT that has `write:packages`). The packages are
-  being kept **public** during this test phase specifically so the
-  office side needs no login/PAT — just `git pull && docker compose
-  pull && docker compose up`. **Whether `ghcr.io` itself (a different
-  host than `github.com`) is actually reachable from the office is
-  unconfirmed — that's what this path is testing.** Revisit and switch
-  the packages back to private once confirmed working.
+  alongside `build:`. Both images have actually been built and pushed
+  (`docker login ghcr.io -u mail2yee` with a `write:packages` PAT, then
+  `docker compose push`), and both packages are flipped to **public** —
+  confirmed by logging out locally and pulling both anonymously (no
+  `docker login` at all) successfully. So the office side really can
+  just be `git pull && docker compose pull && docker compose up -d`,
+  no PAT needed there.
+  **Still unconfirmed: whether `ghcr.io` itself (a different host than
+  `github.com`) is actually reachable through the office firewall** —
+  today's test only confirmed the publish side and that an arbitrary
+  internet connection can pull anonymously, not that the specific office
+  network can reach this specific host. That's what still needs testing
+  on-site. Revisit switching the packages back to private once that's
+  confirmed and this moves past the testing phase.
 
 Either way, capture what happens at the office with
 `./scripts/collect-debug-log.sh` (or manually in `TESTING_LOG.md`) and

@@ -23,18 +23,31 @@ decisions across manually; do not try to build a compatibility layer.
   internal registry, or `docker save`/`docker load`), not inside the
   company network. Confirm this before assuming `docker build` can run
   on-site.
-- **Testing a second path (2026-07-27):** `docker-compose.yml` now also
-  sets `image:` on `backend`/`frontend` pointing at
-  `ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`,
-  so the workflow can be "build+push at home, `docker compose pull` at
-  the office" instead of relying on the internal registry. The packages
-  are being made **public** on GHCR deliberately for this test (repo
-  stays private) so the office side needs no GitHub PAT/login — revisit
-  and switch back to private once this is confirmed working, and figure
-  out PAT handling at the office at that point. Whether the office
-  firewall even lets `ghcr.io` through (distinct host from `github.com`)
-  is **unconfirmed** — that's exactly what's being tested. See README.md
-  "Testing the build at home, run at office path via GHCR".
+- **Second path via GHCR — publish side done and confirmed working
+  (2026-07-28):** `docker-compose.yml` sets `image:` on `backend`/
+  `frontend` pointing at
+  `ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`.
+  Both images have actually been built and pushed (`docker login
+  ghcr.io` with a classic PAT scoped `write:packages` - a fine-grained
+  PAT hit a `403 Forbidden` on the same push, switching to classic
+  fixed it; GHCR's manifest-commit step also hit a couple of transient
+  `500 Internal Server Error`s that cleared on retry, unrelated to
+  auth), and both packages are flipped to **public** on GHCR (repo
+  stays private) - confirmed by logging out locally and pulling both
+  anonymously (no login at all) successfully, including re-confirming
+  the backend needs `--platform linux/amd64` explicitly on an arm64
+  puller (expected, see the Rust-wheel note above; not an issue on the
+  company's x86_64 servers).
+  **Still unconfirmed: whether the office firewall lets `ghcr.io`
+  through at all** (distinct host from `github.com`, which is
+  confirmed reachable) - today's test only confirms the publish side
+  works and that images are pullable from an arbitrary internet
+  connection, not that this specific office network can reach this
+  specific host. That's the one thing left to test on-site. If it
+  works, the office side is just `git pull && docker compose pull &&
+  docker compose up -d`, no PAT needed. Revisit switching the packages
+  back to private once past the testing phase. See README.md "Getting
+  an image onto the air-gapped network".
 - Runtime target is eventually Kubernetes; Docker (docker-compose) is
   what's usable right now. The `k8s/` folder is a placeholder — don't
   build it out until asked.
