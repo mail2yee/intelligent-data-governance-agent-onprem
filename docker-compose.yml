@@ -59,6 +59,14 @@ services:
   frontend:
     image: ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-frontend:latest
     build: ./frontend
+    # Forced to amd64 for the same reason as backend's pin above, just a
+    # different root cause: this had no platform pin at all when first
+    # pushed, so it silently built for the dev machine's native arch
+    # (arm64) and GHCR only ever got an arm64 manifest - which is why
+    # `docker compose pull` succeeded for backend but failed for frontend
+    # on the company's x86_64 servers (confirmed 2026-07-29). The
+    # company's real target is x86_64, same as backend.
+    platform: linux/amd64
     ports:
       - "8080:80"
     depends_on:

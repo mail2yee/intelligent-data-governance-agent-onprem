@@ -48,6 +48,20 @@ decisions across manually; do not try to build a compatibility layer.
   docker compose up -d`, no PAT needed. Revisit switching the packages
   back to private once past the testing phase. See README.md "Getting
   an image onto the air-gapped network".
+- **Real bug found at the office (2026-07-29): `ghcr.io` reachability
+  was fine, but only the backend image would pull - frontend had no
+  matching manifest for the office's x86_64 servers.** Root cause: only
+  `backend`'s `docker-compose.yml` service had a `platform: linux/amd64`
+  pin (needed there for wrenai's Rust wheel, see above); `frontend` had
+  none, so it silently built for whatever the dev machine's native
+  architecture was (arm64, on this Apple Silicon Mac) when first pushed,
+  and GHCR only ever got an arm64 manifest for it. Fixed: added the same
+  `platform: linux/amd64` pin to `frontend`, rebuilt, and re-pushed -
+  confirmed both images now have amd64 manifests and both still pull
+  anonymously. This is exactly the kind of gap the "verify the same way
+  the office will consume it" habit (rather than just "it built on my
+  machine") is meant to catch - worth remembering if a similar
+  build-at-home-ship-elsewhere path gets added for anything else later.
 - Runtime target is eventually Kubernetes; Docker (docker-compose) is
   what's usable right now. The `k8s/` folder is a placeholder — don't
   build it out until asked.
