@@ -11,6 +11,35 @@ judge or trial config) - not every ad-hoc local run.
 
 ---
 
+## 2026-07-29
+
+- Config: `DGO_EVAL_TRIALS=2`, judge model `qwen2.5:latest` (local Ollama),
+  app models: `LLM_MODEL=qwen2.5:latest`, `LLM_SQL_MODEL=llama3-groq-tool-use:8b`.
+- Context: re-ran after the `wrenai_client.py` None-handling bug fix +
+  test-coverage review (no logic change to the matching path itself) -
+  user asked to see current local-model status.
+
+| Golden query | Pass rate | Metrics evaluated |
+|---|---|---|
+| `zh-capacity` | 1.00 | 6 |
+| `zh-demand-orders` | 0.67 | 6 |
+| `zh-move-forecast` | 1.00 | 6 |
+| `zh-out-of-catalog-salary` | 1.00 | 2 |
+| `en-capacity` | 1.00 | 6 |
+| `en-out-of-catalog-weather` | 1.00 | 2 |
+
+- Reading: noticeably better than 2026-07-28's run (5/6 at 1.00 vs. that
+  run's 0.50-0.83 spread on the Traditional-Chinese in-catalog queries) -
+  **this is LLM-output non-determinism, not a code improvement**, nothing
+  in the matching logic changed between the two runs. Manual repeated
+  curl testing done alongside this (outside the eval harness, 2 trials
+  each of the 3 in-catalog queries) showed a less rosy picture: 2/6 runs
+  returned zero matches entirely, 1/6 had an extra unrelated product -
+  matches the ~50-65% reliability already documented in HANDOFF.md more
+  closely than this particular eval run's high scores do. Don't read a
+  single eval run as the definitive number - the point of this log is
+  the trend across several runs, not any one sample.
+
 ## 2026-07-28
 
 - Config: `DGO_EVAL_TRIALS=2`, judge model `qwen2.5:latest` (local Ollama,
