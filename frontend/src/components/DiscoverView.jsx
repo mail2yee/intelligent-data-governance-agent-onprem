@@ -11,12 +11,11 @@ const CHIPS = [
 
 export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
   const [query, setQuery] = useState('')
-  const [phase, setPhase] = useState('idle') // idle | loading | done | error
+  const [phase, setPhase] = useState('idle') // idle | loading | done | empty | error
   const [note, setNote] = useState('')
   const [hits, setHits] = useState([])
   const [steps, setSteps] = useState([])
   const [stepsOpen, setStepsOpen] = useState(false)
-  const [emptyMessage, setEmptyMessage] = useState('')
 
   async function runSearch(q) {
     if (!q.trim()) {
@@ -29,7 +28,6 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
     setHits([])
     setSteps([])
     setStepsOpen(true) // auto-expand live while steps are actually arriving
-    setEmptyMessage('')
 
     let accumulated = ''
     await streamChat(q, lang, {
@@ -41,15 +39,13 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
       onFinal: (evt) => {
         const matched = (evt.matched_products || []).filter((id) => catalog[id])
         const finalReply = evt.reply || accumulated
-        if (matched.length === 0) {
-          setPhase('empty')
-          setEmptyMessage(finalReply || t('emptyState')(q))
-          setHits([])
-          return
-        }
-        setNote(finalReply)
+        // Reply text always ends up in `note` (rendered in the same spot
+        // whether or not anything matched) so it doesn't visually jump
+        // from the streaming position to a different "empty state" box
+        // once the final event decides there's no match.
+        setNote(finalReply || t('emptyState')(q))
         setHits(matched)
-        setPhase('done')
+        setPhase(matched.length === 0 ? 'empty' : 'done')
       },
       onError: () => setPhase('error'),
     })
@@ -97,7 +93,7 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
 
       {phase !== 'idle' && (
         <div>
-          {(phase === 'done' || phase === 'loading') && note && (
+          {(phase === 'done' || phase === 'loading' || phase === 'empty') && note && (
             <div className="assistant-note" dangerouslySetInnerHTML={{ __html: note }} />
           )}
 
@@ -125,7 +121,6 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
             </div>
           )}
 
-          {phase === 'empty' && <div className="empty-state">{emptyMessage}</div>}
           {phase === 'error' && <div className="empty-state">{t('toastFailed')}</div>}
 
           {phase === 'done' && (
