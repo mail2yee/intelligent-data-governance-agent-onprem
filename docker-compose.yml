@@ -19,6 +19,27 @@ services:
       timeout: 5s
       retries: 10
 
+  # Camunda 7 (self-managed, REST API) - see
+  # backend/app/integrations/camunda_client.py. Confirmed 2026-07-29 the
+  # company's real instance is Camunda **7.22** (a correction from an
+  # earlier, wrong Camunda 8/Zeebe assumption) - this runs the same
+  # official image locally so the whole ticket -> approve -> Camunda
+  # task-completion loop can be tested end-to-end without the company
+  # network. Mapped to host port 8082 - 8080 is reserved for DataHub's
+  # GMS (see datahub/ and DATAHUB_API_URL below; DataHub is run as its
+  # own separate `datahub docker quickstart` stack, not part of this
+  # compose file), and 8081 is taken by an unrelated project on this dev
+  # machine.
+  camunda:
+    image: camunda/camunda-bpm-platform:7.22.0
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/engine-rest/engine"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   backend:
     # image + build both set on purpose: `docker compose build` (at home,
     # with internet access) tags the result as this ghcr.io name, then
@@ -27,8 +48,9 @@ services:
     # just pulls this image - no pip install / PyPI access needed there.
     image: ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-backend:latest
     # Build context is the repo root, not ./backend, so the Dockerfile can
-    # also COPY ../wren/project (the WrenAI semantic model) - see
-    # backend/Dockerfile and app/integrations/wrenai_client.py.
+    # also COPY ../wren/project (the WrenAI semantic model) and
+    # ../camunda/ (the BPMN process this app deploys itself, see
+    # backend/entrypoint.sh) - see backend/Dockerfile.
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -50,10 +72,24 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dgo}
       POSTGRES_DB: dgo
       WREN_PROJECT_PATH: /app/wren_project
+      # Container-network address of the camunda service above - the
+      # .env.example default (localhost:8080) is for running Camunda
+      # standalone outside Docker instead.
+      CAMUNDA_BASE_URL: http://camunda:8080/engine-rest
+      # DataHub (see datahub/seed_catalog.py) runs as its own independent
+      # `datahub docker quickstart` stack on the host, not a service in
+      # this compose file (mirrors the sibling agent_mem0_poc repo's
+      # approach) - host.docker.internal is how a container reaches a
+      # host-published port on macOS/Windows Docker Desktop (confirmed
+      # already working for LLM_BASE_URL against local Ollama the same
+      # way).
+      DATAHUB_API_URL: http://host.docker.internal:8080
     ports:
       - "8000:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      camunda:
         condition: service_healthy
 
   frontend:
@@ -67,8 +103,12 @@ services:
     # on the company's x86_64 servers (confirmed 2026-07-29). The
     # company's real target is x86_64, same as backend.
     platform: linux/amd64
+    # Not 8080: that's reserved for DataHub's GMS (a pre-existing local
+    # install on this dev machine, shared with the sibling agent_mem0_poc
+    # repo, confirmed already bound to host 8080) - see DATAHUB_API_URL
+    # above.
     ports:
-      - "8080:80"
+      - "8090:80"
     depends_on:
       - backend
 

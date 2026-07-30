@@ -6,10 +6,16 @@ async def _mock_catalog(monkeypatch, catalog):
 
 
 async def _skip_camunda(monkeypatch):
-    async def _fake(*args, **kwargs):
+    from app.integrations.camunda_client import ProcessStartResult
+
+    async def _fake_start(*args, **kwargs):
+        return ProcessStartResult("Skipped (test)", None)
+
+    async def _fake_complete(*args, **kwargs):
         return "Skipped (test)"
 
-    monkeypatch.setattr("app.main.camunda_client.start_approval_process", _fake)
+    monkeypatch.setattr("app.main.camunda_client.start_approval_process", _fake_start)
+    monkeypatch.setattr("app.main.camunda_client.complete_approval_task", _fake_complete)
 
 
 async def test_health(client):
@@ -97,6 +103,45 @@ async def test_create_and_list_ticket(client, monkeypatch):
     assert len(ticket["owners"]) == 3
     assert "capacity_director@example.com" in ticket["owners"]
     assert all(a["decision"] == "PENDING" for a in ticket["approvals"].values())
+
+
+async def test_ticket_stores_camunda_process_instance_id_and_completes_task_on_approval(client, monkeypatch):
+    # Confirms the two new integration points added alongside the
+    # Camunda 7 rewrite: create_ticket persists whatever process_instance_id
+    # Camunda returned (needed later to find the right task), and
+    # submit_approval passes that same id through to complete_approval_task.
+    from app.integrations.camunda_client import ProcessStartResult
+
+    await _mock_catalog(monkeypatch, {"p1": {"id": "p1", "owner": "a@example.com"}})
+
+    async def _fake_start(*args, **kwargs):
+        return ProcessStartResult("Successfully triggered in Camunda", "process-instance-123")
+
+    monkeypatch.setattr("app.main.camunda_client.start_approval_process", _fake_start)
+
+    completed_with = {}
+
+    async def _fake_complete(process_instance_id, owner_email, decision, reason):
+        completed_with["process_instance_id"] = process_instance_id
+        completed_with["owner_email"] = owner_email
+        completed_with["decision"] = decision
+        return "Completed in Camunda"
+
+    monkeypatch.setattr("app.main.camunda_client.complete_approval_task", _fake_complete)
+
+    res = await client.post("/api/tickets", json={"products": ["p1"], "objective": "t", "purpose": "PoC"})
+    ticket_id = res.json()["ticket_id"]
+
+    await client.post(
+        f"/api/tickets/{ticket_id}/approvals",
+        json={"owner_email": "a@example.com", "decision": "Approve", "reason": ""},
+    )
+
+    assert completed_with == {
+        "process_instance_id": "process-instance-123",
+        "owner_email": "a@example.com",
+        "decision": "Approve",
+    }
 
 
 async def test_approve_all_owners_moves_ticket_to_approved(client, monkeypatch):

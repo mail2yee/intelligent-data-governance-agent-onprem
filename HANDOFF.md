@@ -76,8 +76,8 @@ decisions across manually; do not try to build a compatibility layer.
 | Concern | GCP PoC | This repo |
 |---|---|---|
 | LLM | Gemini via `google-genai`, streamed via SSE | On-prem model, assumed **OpenAI-compatible** `POST /v1/chat/completions` with `stream: true` (see `backend/app/integrations/llm_client.py`) — confirmed this shape works against a real local Ollama (2026-07-28), but the **company's actual gateway is still unconfirmed** (a different endpoint) — adjust `llm_client.py` if its real shape differs |
-| Workflow engine | Camunda SaaS (`login.cloud.camunda.io`), fire-and-forget, not really wired to approval state | Camunda **self-managed** (on-prem), real `pyzeebe` client wired in (see `backend/app/integrations/camunda_client.py`) — but no BPMN process is deployed yet (confirmed with the user), so it currently fails gracefully every time until one exists. `CAMUNDA_PROCESS_ID` in `.env` is the only thing to change once it does. |
-| Data catalog | Dataplex (GCP) | DataHub GraphQL API, real client wired in (see `backend/app/integrations/datahub_client.py`) — assumes `maturity_level`/`data_quality_score`/etc. live as DataHub *customProperties* (confirmed assumption with the user) and derives each product's `id` by slugifying its DataHub display name. Falls back to the same hardcoded mock catalog as the GCP PoC if DataHub is unreachable or returns nothing. |
+| Workflow engine | Camunda SaaS (`login.cloud.camunda.io`), fire-and-forget, not really wired to approval state | **Camunda 7 (self-managed, REST API)** — corrected 2026-07-29 from an earlier, wrong Camunda 8/Zeebe assumption; the company's real instance is **7.22**. Real REST client (`backend/app/integrations/camunda_client.py`), a verified BPMN process (`camunda/data-gov-approval.bpmn`), and a working local self-hosted instance (`docker-compose.yml`'s `camunda` service) — see "Camunda + DataHub: local hosting and the external-service switch" below for the full loop, including the owner-approves-in-app -> Camunda task completes mechanism. |
+| Data catalog | Dataplex (GCP) | DataHub GraphQL API, real client wired in (see `backend/app/integrations/datahub_client.py`) — assumes `maturity_level`/`data_quality_score`/etc. live as DataHub *customProperties* (confirmed assumption with the user) and derives each product's `id` by slugifying its DataHub display name. Falls back to the same hardcoded mock catalog as the GCP PoC if DataHub is unreachable or returns nothing. Local self-hosting via `scripts/setup-datahub.sh` — see below. |
 | Ticket storage | Firestore | PostgreSQL (see `backend/app/db.py`) |
 | Semantic layer (zero-hallucination data-subject matching) | N/A | **Decided and built (2026-07-27):** WrenAI, embedded as a Python library (`wrenai[postgres]`) inside the backend process - see `backend/app/integrations/wrenai_client.py` and `wren/project/`. Scope is deliberately narrow: verify *which catalog data subject* matches a chat query, not full NL -> SQL -> real-data-answer execution (that stays out of scope, see below) |
 | Frontend | Single Python string containing HTML/CSS/JS, served by FastAPI | React (Vite) SPA, calling the FastAPI backend as a separate JSON/SSE API |
@@ -207,38 +207,92 @@ gateway is ever briefly unreachable in real use. It only knows the mock
 catalog's 3 entries; revisit once DataHub is wired with real catalog
 contents.
 
-**Camunda and DataHub are now real, wired clients** (not mock stubs):
-`backend/app/integrations/camunda_client.py` uses `pyzeebe` to actually
-start a process instance; `backend/app/integrations/datahub_client.py`
-actually queries DataHub's GraphQL API. Confirmed against each project's
-own docs (endpoint paths, auth header shape, the pyzeebe channel/run_process
-call). Verified end-to-end that both correctly attempt a real
-connection and fail gracefully (falling back to the mock catalog / a
-"Skipped" ticket status) when nothing's listening yet — tested against
-real Postgres + a real (unreachable, as expected) gateway/endpoint, not
-just import-checked. What's still open, because it genuinely needs
-facts only reachable from inside the company network:
-- **Not connected right now, by design — clarified 2026-07-29 in
-  response to a direct question about this.** `docker-compose.yml` has
-  no Camunda service at all (only `postgres`/`backend`/`frontend`); no
-  self-managed Camunda/Zeebe instance runs anywhere in this repo's
-  stack. Two `.env` values control it, and answer "which workflow runs":
-  `CAMUNDA_GATEWAY_ADDRESS` (host:port of the Zeebe gRPC gateway - where)
-  and `CAMUNDA_PROCESS_ID` (the BPMN process `id` to start - which
-  workflow; currently `data-gov-approval`, a placeholder that doesn't
-  match any deployed process yet). Every ticket creation attempts a real
-  connection using these two values and gets a graceful `"Skipped"`
-  status back, not an error, since nothing is listening. Making this
-  real needs three things together, none done yet: (1) an actual running
-  self-managed Camunda 8/Zeebe gateway reachable from wherever the
-  backend runs, (2) a BPMN process deployed to it, (3) both `.env`
-  values updated to match - no code change needed once those exist.
-- Camunda auth defaults to unauthenticated (`create_insecure_channel`).
-  If it turns out Identity/Keycloak OAuth is required, the OAuth path in
-  `camunda_client.py` is implemented but **untested against a live
-  server** — pyzeebe's docs didn't confirm a purpose-built helper for
-  this, so it's built on core `grpc` primitives instead. Verify it once
-  real credentials exist.
+## Camunda + DataHub: local hosting and the external-service switch
+
+**Camunda 8 -> 7.22 correction (2026-07-29):** the entire Camunda
+integration was originally built against Camunda 8 (self-managed Zeebe,
+gRPC, `pyzeebe`) based on the original HANDOFF description. The user
+corrected this mid-session: the company's actual instance is **Camunda
+7.22**, a completely different product - REST API (`/engine-rest`), no
+gRPC, no job-worker/message-correlation model. `camunda_client.py` was
+rewritten from scratch (not patched) and hands-on verified against a
+real local `camunda/camunda-bpm-platform:7.22.0` container via raw curl
+before writing any production code, then again through the actual
+rewritten app code once wired up - see below.
+
+**Local self-hosting, done and verified end-to-end 2026-07-29/30** (the
+user's explicit ask: "一次全部做完：這兩項 + 簽核完成回報 Camunda" - local
+hosting for both Camunda and DataHub, plus the approval-completion-
+reports-back-to-Camunda mechanism):
+
+- **Camunda**: `docker-compose.yml`'s `camunda` service
+  (`camunda/camunda-bpm-platform:7.22.0`, host port 8082 - 8080 is
+  reserved for DataHub's GMS, 8081 is taken by an unrelated project on
+  this dev machine). `backend/entrypoint.sh` deploys
+  `camunda/data-gov-approval.bpmn` on every backend startup via a small
+  inline Python/httpx script (`deploy-changed-only=true` makes re-
+  deploying a no-op) - tolerant of Camunda being unreachable, doesn't
+  block backend startup. Verified the **full loop through the real,
+  running app** (not just curl): `POST /api/tickets` -> Camunda process
+  instance starts, one task per owner (multi-instance user task) ->
+  `camunda_process_instance_id` persisted on the `Ticket` row ->
+  `POST /api/tickets/{id}/approvals` for one owner -> that owner's
+  Camunda task completes (confirmed via a direct Camunda REST query:
+  task count drops from 3 to 2) -> after all owners approve, the ticket
+  reaches `APPROVED` in this app's own DB *and* the Camunda process
+  instance itself ends (`GET .../process-instance/{id}` 404s). This
+  app's ticket/approval state machine remains the source of truth;
+  Camunda mirrors progress, it doesn't decide it.
+- **DataHub**: run as its own independent `datahub docker quickstart`
+  stack (not a service in this repo's `docker-compose.yml`) via
+  `scripts/setup-datahub.sh`, which also seeds 3 sample dataset entities
+  (`datahub/seed_catalog.py`) matching `datahub_client.py`'s expected
+  shape (`properties.name`/`description`/`customProperties`). **This
+  choice matters in practice, not just style**: this dev machine already
+  had a DataHub instance running from the sibling `agent_mem0_poc` repo,
+  with its GMS bound to host port 8080 - reusing that shared instance
+  (rather than each repo running its own) avoided two DataHub stacks
+  fighting over the same port. Because of that, **this app's frontend
+  moved from host port 8080 to 8090** (`docker-compose.yml`) to leave
+  8080 free for DataHub. Verified end-to-end: seeded real dataset
+  entities, confirmed `datahub_client.py`'s actual GraphQL query/parsing
+  code reads them back correctly (both directly and through the running
+  backend container via `host.docker.internal:8080`), then created a
+  real ticket using a DataHub-sourced product id and confirmed it flowed
+  correctly into Camunda too.
+- **The config switch to point at the company's real external
+  services** (the other half of the user's original ask) is already
+  realized cleanly for both, since neither integration was ever built
+  Docker-network-coupled: for Camunda, change `CAMUNDA_BASE_URL` (to the
+  company's real `engine-rest` URL) and `CAMUNDA_BASIC_AUTH_USERNAME`/
+  `PASSWORD` if it requires auth - `CAMUNDA_PROCESS_DEFINITION_KEY` stays
+  as-is unless the company's own deployed process uses a different key.
+  For DataHub, change `DATAHUB_API_URL`/`DATAHUB_API_TOKEN`. No code
+  change needed either way, same pattern already used for `LLM_BASE_URL`.
+
+**Gaps flagged during the original gap-analysis conversation, explicitly
+deferred (not decided or built) rather than silently skipped:**
+- **No authentication on `submit_approval()`** - anyone who knows a
+  ticket id can approve/reject as any owner by supplying their email in
+  the request body; there's no check that the caller *is* that owner.
+  Matters more once "click a link in an email" is real (see next point) -
+  a bare link with no auth would let anyone who intercepts/forwards the
+  email approve on the real owner's behalf.
+- **No email notification capability exists.** The original ask
+  envisioned owners approving via a link in an email; nothing in this
+  repo sends email today - would need an SMTP/mail-gateway integration
+  plus a decision on trigger points (ticket created? each pending
+  owner reminded on a schedule?).
+- **No frontend deep-linking to a specific ticket** - approvals today
+  only happen through the Approvals list UI, not a standalone URL a
+  human could land on from an email link. Needed together with the two
+  points above to actually realize the original "approve via email link"
+  flow end-to-end.
+- Camunda REST auth: `_auth()` in `camunda_client.py` supports HTTP Basic
+  auth (the standard Camunda 7 approach via a servlet filter) but this is
+  **unconfirmed against the company's real instance** - verify once
+  reachable and adjust if it uses something else (e.g. an API key
+  header, or Keycloak-fronted OAuth like Camunda 8 would have needed).
 - DataHub field mapping assumes `maturity_level`/`data_quality_score`/etc.
   live as DataHub *customProperties* (confirmed assumption with the
   user) under `dataset.properties.customProperties` — the exact nesting

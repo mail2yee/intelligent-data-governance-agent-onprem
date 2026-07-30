@@ -128,10 +128,17 @@ async def create_ticket(request: Request):
         await session.commit()
         logger.info("Ticket %s created, owners=%s", ticket_id, owners)
 
-    camunda_status = await camunda_client.start_approval_process(ticket_id, products, owners, purpose)
-    logger.info("Ticket %s Camunda status: %s", ticket_id, camunda_status)
+    camunda_result = await camunda_client.start_approval_process(ticket_id, products, owners, purpose)
+    logger.info("Ticket %s Camunda status: %s", ticket_id, camunda_result.status)
 
-    return {"ticket_id": ticket_id, "camunda_status": camunda_status}
+    if camunda_result.process_instance_id:
+        async with async_session() as session:
+            saved_ticket = await session.get(Ticket, ticket_id)
+            if saved_ticket:
+                saved_ticket.camunda_process_instance_id = camunda_result.process_instance_id
+                await session.commit()
+
+    return {"ticket_id": ticket_id, "camunda_status": camunda_result.status}
 
 
 @app.get("/api/tickets")
@@ -185,4 +192,11 @@ async def submit_approval(ticket_id: str, request: Request):
 
         await session.commit()
         logger.info("Ticket %s new status=%s", ticket_id, ticket.status)
-        return {"status": "success"}
+        process_instance_id = ticket.camunda_process_instance_id
+
+    camunda_status = await camunda_client.complete_approval_task(
+        process_instance_id, owner_email, decision, reason
+    )
+    logger.info("Ticket %s Camunda task completion: %s", ticket_id, camunda_status)
+
+    return {"status": "success"}

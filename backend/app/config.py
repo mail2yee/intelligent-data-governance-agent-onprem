@@ -17,19 +17,30 @@ class Settings(BaseSettings):
     # same as before this setting existed.
     llm_sql_model: str = ""
 
-    camunda_gateway_address: str = "localhost:26500"
-    # No BPMN process is deployed yet (confirmed with the user) - this is a
-    # placeholder. Deploy a real process and update it here, no code change needed.
-    camunda_process_id: str = "data-gov-approval"
-    # Leave unset to use an unauthenticated (insecure) gRPC channel - confirmed
-    # with the user this is likely fine for their trusted internal network.
-    # Set all three to use an OAuth2 client-credentials-authenticated channel
-    # instead (Camunda Identity/Keycloak) - see camunda_client.py docstring,
-    # this path is unconfirmed/untested against a live server.
-    camunda_oauth_client_id: str = ""
-    camunda_oauth_client_secret: str = ""
-    camunda_oauth_token_url: str = ""
-    camunda_oauth_audience: str = "zeebe-api"
+    # On-prem Camunda 7 (self-managed) REST API - see
+    # integrations/camunda_client.py. Confirmed 2026-07-29 the company's
+    # actual instance is Camunda **7.22** (REST, no gRPC/Zeebe/pyzeebe -
+    # a full rewrite from an earlier, incorrect Camunda 8 assumption).
+    # Default matches a local `camunda/camunda-bpm-platform:7.22.0`
+    # container run directly (not via this repo's docker-compose, which
+    # remaps the port and overrides this to the container-network address
+    # - see docker-compose.yml).
+    camunda_base_url: str = "http://localhost:8080/engine-rest"
+    # The BPMN process *definition key* (Camunda 7's term - the
+    # `id="..."` attribute on `<bpmn:process>`), not a Zeebe
+    # bpmn_process_id. `camunda/data-gov-approval.bpmn` in this repo
+    # declares exactly this key, and this app deploys that file itself
+    # (see backend/entrypoint.sh) - the company's real instance would
+    # need its own process deployed with a matching key, or this value
+    # changed to match theirs. No code change needed either way.
+    camunda_process_definition_key: str = "data-gov-approval"
+    # Leave both blank for an unauthenticated connection (confirmed OK
+    # against the local test instance - Camunda 7's REST API has no
+    # authentication by default). The company's real instance likely
+    # requires HTTP Basic Auth (the standard Camunda 7 approach, via a
+    # servlet filter) - unconfirmed against it specifically.
+    camunda_basic_auth_username: str = ""
+    camunda_basic_auth_password: str = ""
 
     datahub_api_url: str = "http://localhost:8080"
     datahub_api_token: str = ""

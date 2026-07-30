@@ -24,6 +24,7 @@ COPY backend/app ./app
 COPY backend/entrypoint.sh .
 RUN chmod +x entrypoint.sh
 COPY wren/project ./wren_project
+COPY camunda/data-gov-approval.bpmn ./camunda/data-gov-approval.bpmn
 
 EXPOSE 8000
 ENTRYPOINT ["./entrypoint.sh"]

@@ -21,6 +21,13 @@ class Ticket(Base):
     status: Mapped[str] = mapped_column(String, default="PENDING_APPROVAL")
     owners: Mapped[list] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    # Set from integrations.camunda_client.start_approval_process()'s
+    # result once a Camunda process instance actually starts (None if
+    # Camunda was unreachable, or no process instance exists for this
+    # ticket) - needed later to find and complete the right owner's task
+    # in camunda_client.complete_approval_task() (see main.py's
+    # submit_approval).
+    camunda_process_instance_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     approvals: Mapped[list["Approval"]] = relationship(back_populates="ticket", cascade="all, delete-orphan")
 

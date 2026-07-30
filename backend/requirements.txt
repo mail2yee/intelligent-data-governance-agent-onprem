@@ -5,6 +5,5 @@ asyncpg
 httpx
 pydantic-settings
 python-dotenv
-pyzeebe
 wrenai[postgres]
 opencc-python-reimplemented

@@ -18,11 +18,19 @@ things left off.
   worth checking before assuming anything about how WrenAI works.
 - Stack: FastAPI + PostgreSQL backend, React + Vite frontend (visual
   style aligned to the company's internal TADiS design system, see
-  HANDOFF.md's UI/UX section), real Camunda (pyzeebe/gRPC) and DataHub
-  (GraphQL) integrations with graceful fallback to mocks on failure,
-  plus WrenAI (embedded Python library, not a service) as a
-  zero-hallucination semantic layer for chat.py's data-subject matching.
-- Backend: `ruff` + `mypy` clean, 60 pytest tests (`backend/tests/`) plus
+  HANDOFF.md's UI/UX section), real Camunda **7.22** (REST API,
+  `/engine-rest` - corrected 2026-07-29 from an earlier, wrong Camunda
+  8/Zeebe assumption) and DataHub (GraphQL) integrations with graceful
+  fallback to mocks on failure, plus WrenAI (embedded Python library, not
+  a service) as a zero-hallucination semantic layer for chat.py's
+  data-subject matching.
+- **Camunda and DataHub can both be fully self-hosted locally now**
+  (`docker-compose.yml`'s `camunda` service + `scripts/setup-datahub.sh`)
+  - the full create-ticket -> Camunda-starts-process -> owner-approves ->
+  Camunda-task-completes loop is verified end-to-end through the actual
+  app. See HANDOFF.md "Camunda + DataHub: local hosting and the
+  external-service switch" before touching either integration.
+- Backend: `ruff` + `mypy` clean, 63 pytest tests (`backend/tests/`) plus
   a separate DeepEval-based LLM-judge eval suite (`backend/evals/`, not
   part of a bare `pytest` run - see `backend/README.md`'s "Evals"
   section). Frontend: `oxlint` clean, 29 vitest tests. All pass.

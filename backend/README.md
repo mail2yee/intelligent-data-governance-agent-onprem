@@ -133,17 +133,26 @@ WrenAI code, judge model, or trial count) get appended to `evals/EVAL_LOG.md`
   company's actual on-prem model gateway is still a different,
   unconfirmed endpoint - point `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY`
   at it to find out.
-- Camunda (`app/integrations/camunda_client.py`) — **real client**
-  (`pyzeebe`), defaults to an unauthenticated channel. Falls back to a
-  "Skipped" status if the gateway is unreachable or `CAMUNDA_PROCESS_ID`
-  (currently a placeholder — no process deployed yet) doesn't exist.
-  Optional OAuth path is implemented but untested against a live
-  Identity/Keycloak server.
+- Camunda (`app/integrations/camunda_client.py`) — **real client**,
+  Camunda 7's REST API (`/engine-rest`; corrected 2026-07-29 from an
+  earlier, wrong Camunda 8/Zeebe assumption - the company's real instance
+  is 7.22). Defaults to unauthenticated; HTTP Basic auth supported via
+  `CAMUNDA_BASIC_AUTH_USERNAME`/`PASSWORD` but unconfirmed against the
+  company's real instance. Falls back to a "Skipped" status if Camunda is
+  unreachable - never raises. Can be run fully self-hosted locally (see
+  `docker-compose.yml`'s `camunda` service and `camunda/data-gov-approval.bpmn`,
+  the BPMN process this app deploys to it on every startup) - the full
+  create-ticket -> approve -> Camunda-task-completes loop is verified
+  end-to-end against a real local instance.
 - DataHub (`app/integrations/datahub_client.py`) — **real client**
   (GraphQL), falls back to a hardcoded mock catalog if unreachable.
   Assumes extra fields (maturity_level, etc.) live as DataHub
   customProperties — see the module docstring for exactly what's
-  confirmed vs. assumed about the schema shape.
+  confirmed vs. assumed about the schema shape. Can be run self-hosted
+  locally via `scripts/setup-datahub.sh` (its own `datahub docker
+  quickstart` stack + `datahub/seed_catalog.py` sample data) - verified
+  end-to-end against a real local instance, including through the
+  containerized backend.
 
 ## Routes
 
