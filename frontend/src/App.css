@@ -246,29 +246,34 @@ h1 {
 .search-box button:hover {
   background: var(--accent-hover);
 }
+/* Sits inline in .search-box itself (between input and the Search
+   button), Google "AI Mode"-style - a compact segmented control, not
+   free-floating pills below the bar. */
 .search-mode-toggle {
   display: flex;
-  gap: 6px;
-  justify-content: center;
-  margin-top: 10px;
+  align-items: center;
+  gap: 2px;
+  background: var(--surface-alt);
+  border-radius: 999px;
+  padding: 3px;
+  flex-shrink: 0;
 }
 .mode-pill {
-  border: 1px solid var(--border);
-  background: var(--surface);
+  border: none;
+  background: transparent;
   color: var(--text-secondary);
   border-radius: 999px;
-  padding: 5px 14px;
-  font-size: 12px;
+  padding: 5px 12px;
+  font-size: 11.5px;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
 }
 .mode-pill:hover {
-  border-color: var(--accent);
   color: var(--accent);
 }
 .mode-pill.active {
   background: var(--accent);
-  border-color: var(--accent);
   color: #fff;
 }
 .chips {

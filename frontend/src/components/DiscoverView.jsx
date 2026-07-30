@@ -83,24 +83,24 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
               if (e.key === 'Enter') runSearch(query)
             }}
           />
+          <div className="search-mode-toggle" role="group">
+            <button
+              type="button"
+              className={`mode-pill${mode === 'keyword' ? ' active' : ''}`}
+              onClick={() => selectMode('keyword')}
+            >
+              {t('searchModeKeyword')}
+            </button>
+            <button
+              type="button"
+              className={`mode-pill${mode === 'ai' ? ' active' : ''}`}
+              onClick={() => selectMode('ai')}
+            >
+              {t('searchModeAi')}
+            </button>
+          </div>
           <button type="button" onClick={() => runSearch(query)}>
             {t('searchBtn')}
-          </button>
-        </div>
-        <div className="search-mode-toggle" role="group">
-          <button
-            type="button"
-            className={`mode-pill${mode === 'keyword' ? ' active' : ''}`}
-            onClick={() => selectMode('keyword')}
-          >
-            {t('searchModeKeyword')}
-          </button>
-          <button
-            type="button"
-            className={`mode-pill${mode === 'ai' ? ' active' : ''}`}
-            onClick={() => selectMode('ai')}
-          >
-            {t('searchModeAi')}
           </button>
         </div>
         <div className="chips">
