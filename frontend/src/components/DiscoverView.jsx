@@ -72,36 +72,34 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
         <p className="lead" style={{ textAlign: 'center' }}>
           {t('discoverLead')}
         </p>
-        <div className="search-box">
-          <span>&#128269;</span>
-          <input
-            type="text"
-            placeholder={t('searchPlaceholder')}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') runSearch(query)
-            }}
-          />
-          <div className="search-mode-toggle" role="group">
+        <div className="search-box-wrap">
+          <label className="search-mode-switch">
+            <span>{t('searchModeAi')}</span>
             <button
               type="button"
-              className={`mode-pill${mode === 'keyword' ? ' active' : ''}`}
-              onClick={() => selectMode('keyword')}
+              role="switch"
+              aria-checked={mode === 'ai'}
+              className={`switch-track${mode === 'ai' ? ' on' : ''}`}
+              onClick={() => selectMode(mode === 'ai' ? 'keyword' : 'ai')}
             >
-              {t('searchModeKeyword')}
+              <span className="switch-knob" />
             </button>
-            <button
-              type="button"
-              className={`mode-pill${mode === 'ai' ? ' active' : ''}`}
-              onClick={() => selectMode('ai')}
-            >
-              {t('searchModeAi')}
+          </label>
+          <div className="search-box">
+            <span>&#128269;</span>
+            <input
+              type="text"
+              placeholder={t('searchPlaceholder')}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') runSearch(query)
+              }}
+            />
+            <button type="button" onClick={() => runSearch(query)}>
+              {t('searchBtn')}
             </button>
           </div>
-          <button type="button" onClick={() => runSearch(query)}>
-            {t('searchBtn')}
-          </button>
         </div>
         <div className="chips">
           {CHIPS.map((c) => (

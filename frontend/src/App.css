@@ -246,35 +246,53 @@ h1 {
 .search-box button:hover {
   background: var(--accent-hover);
 }
-/* Sits inline in .search-box itself (between input and the Search
-   button), Google "AI Mode"-style - a compact segmented control, not
-   free-floating pills below the bar. */
-.search-mode-toggle {
+.search-box-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 620px;
+}
+/* Floats above the search bar's top-right corner, Google "AI Mode"-style -
+   a real on/off switch (off = general search, on = AI search), not a
+   pair of always-visible option buttons. */
+.search-mode-switch {
+  position: absolute;
+  top: -24px;
+  right: 6px;
   display: flex;
   align-items: center;
-  gap: 2px;
-  background: var(--surface-alt);
-  border-radius: 999px;
-  padding: 3px;
-  flex-shrink: 0;
-}
-.mode-pill {
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  border-radius: 999px;
-  padding: 5px 12px;
+  gap: 6px;
   font-size: 11.5px;
   font-weight: 600;
+  color: var(--text-secondary);
   cursor: pointer;
-  white-space: nowrap;
+  user-select: none;
 }
-.mode-pill:hover {
-  color: var(--accent);
+.switch-track {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--border);
+  cursor: pointer;
+  transition: background 0.15s ease;
 }
-.mode-pill.active {
+.switch-track.on {
   background: var(--accent);
-  color: #fff;
+}
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+.switch-track.on .switch-knob {
+  transform: translateX(14px);
 }
 .chips {
   display: flex;
