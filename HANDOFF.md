@@ -458,6 +458,95 @@ verified end-to-end there against a real Postgres, including confirming
   half was exercised directly (via a manual `docker compose exec` check),
   not through a real two-LLM-call chat turn.
 
+## Security review (2026-07-30) and fixes applied
+
+A user-requested "is this ready to go live" review found this API had
+**zero authentication anywhere** (critical) and three real,
+`dangerouslySetInnerHTML`-based XSS vectors in the frontend (high) - both
+fixed same-day. Also verified, empirically rather than assumed, that
+WrenAI's governed SQL execution already structurally blocks destructive
+SQL - see below.
+
+**API key auth (interim measure, not a full fix):**
+`backend/app/main.py`'s `require_api_key` gates every `/api/*` route
+(via an `APIRouter(dependencies=[Depends(require_api_key)])`, so a route
+added later is protected by default) behind an `X-API-Key` header,
+checked against `settings.api_key` (`API_KEY` in `backend/.env`). Empty
+(the default) disables the check entirely, matching this repo's existing
+"empty = disabled" convention for optional integrations - **a real value
+must be set before any real deployment**. `/health` stays unauthenticated
+on purpose (status checks shouldn't need a secret).
+Frontend: `frontend/src/api.js` sends the key via `VITE_API_KEY`, which
+Vite bakes into the built JS **at image-build time** (not read at
+container startup like the backend's `.env`) - wired through
+`frontend/Dockerfile`'s `ARG VITE_API_KEY` and `docker-compose.yml`'s
+`build.args`, sourced from the repo-root `.env` (see `.env.example`).
+Verified end-to-end against the real running stack: rebuilt both images
+with a real key set, confirmed direct backend requests without the
+header get `401`, requests through the frontend's nginx proxy without
+the header also get `401`, and the key literally baked into the built JS
+bundle (`grep`'d for it in the built `dist/assets/*.js`) makes both
+succeed. Then reverted back to the disabled default and reconfirmed
+everything works exactly as before.
+**Explicitly does NOT fix**: `submit_approval()`'s separate gap (nothing
+verifies the caller actually *is* the `owner_email` they claim in the
+request body) - this is a single shared secret, not per-user identity,
+so it stops anonymous/external traffic but not an insider impersonating
+a different owner. Closing that properly needs real per-user auth
+(company SSO/OIDC), not attempted here.
+
+**XSS fixes:** three `dangerouslySetInnerHTML` sites rendered
+attacker-influenceable content as raw HTML with no sanitization -
+`DiscoverView.jsx`'s `note` (raw LLM/local-match reply text),
+`CopilotDock.jsx`'s user-typed message echoed straight back as HTML, and
+`CopilotDock.jsx`'s streamed bot answer. All three now render as plain
+text (React's default auto-escaping) instead. This required a matching
+backend change: `chat.py`'s `GREETING_REPLY` and `local_rule_match()`'s
+templated reply used to contain literal `<b>`/`<br>` tags (intentional,
+developer-authored formatting) - these are now plain text too (`\n`
+instead of `<br>`, no bold), since the frontend no longer renders any
+reply as HTML at all - restoring the exact same one-off formatting
+safely wasn't worth the added protocol complexity for two words of bold
+and a line break. `frontend/src/App.css`'s `.assistant-note`/
+`.copilot-answer` gained `white-space: pre-wrap` so the greeting's `\n`
+still shows as a real line break without needing HTML.
+
+**Verified (not assumed) that WrenAI's governed SQL execution already
+blocks destructive queries** - relevant because `chat.py`'s
+`resolve_via_semantic_layer()` lets an LLM write SQL from user input, so
+a prompt-injection attack asking the model to write a `DROP`/`DELETE`
+is a real threat model to check, not a hypothetical. Tested directly
+against the real running engine: `DROP TABLE tickets` /
+`DELETE FROM tickets` fail immediately at the planning stage (`tickets`
+isn't a declared MDL model, only `data_products` is); `DELETE FROM
+data_products` (a declared model) reports success but is silently
+transpiled into a read-only probe query - confirmed by checking
+Postgres's actual row count before and after execution: unchanged (3
+rows), nothing was actually deleted. This is a real, structural guardrail
+already built into the engine, not something this session added.
+**Recommended (not yet done) defense-in-depth**: give WrenAI's own
+Postgres connection a genuinely read-only DB role, separate from the
+app's own read-write role for `tickets`/`approvals` - so this protection
+doesn't depend solely on WrenAI's software behavior staying correct
+across future version upgrades.
+
+**Flagged but not yet acted on** (lower priority than the two fixes
+above, see the review discussion for full detail):
+- No rate limiting on `/api/chat` - combined with (now-mitigated, not
+  eliminated) unauthenticated access, a resource-exhaustion/LLM-cost risk.
+- No request body schema validation (`main.py` uses raw
+  `await request.json()` + dict indexing, not Pydantic models) - no
+  length caps on `objective`/`purpose`/chat `message`.
+- Both Dockerfiles run as root (no `USER` directive) - standard hardening
+  gap, not yet closed.
+- `backend/requirements.txt` has no version pins - reproducibility/
+  dependency-vulnerability-tracking gap.
+- No `.dockerignore` in either `backend/` or `frontend/`.
+- No schema migration tool (`init_db()` is still a bare `create_all`) -
+  a real gap for evolving the schema post-launch without data loss.
+- CORS origin and TLS termination need explicit confirmation/config at
+  actual deployment time, not just left at their local-dev defaults.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

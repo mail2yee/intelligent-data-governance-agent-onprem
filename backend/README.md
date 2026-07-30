@@ -127,6 +127,13 @@ WrenAI code, judge model, or trial count) get appended to `evals/EVAL_LOG.md`
   greeting/zero-hallucination/bilingual logic from the PoC, plus a local
   keyword-match fallback if the LLM call fails), `/api/tickets*` (real
   Postgres persistence, real approval state machine) — **implemented**.
+- Every `/api/*` route requires an `X-API-Key` header when `API_KEY` is
+  set (`app/main.py`'s `require_api_key`, empty by default = disabled) —
+  an interim, coarse gate added 2026-07-30 after a security review found
+  zero authentication; it does **not** fix `submit_approval()`'s separate
+  gap (nothing verifies the caller is really the `owner_email` they claim)
+  — see HANDOFF.md's "Security review" section for the full picture and
+  what's still open.
 - LLM call (`app/integrations/llm_client.py`) — implemented against an
   **assumed** OpenAI-compatible endpoint shape, confirmed working for
   real against a local Ollama (see `.env.example`'s comments). The

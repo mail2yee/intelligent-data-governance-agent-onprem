@@ -22,6 +22,7 @@ backend/.deepeval/
 # Secrets - never commit real values
 .env
 backend/.env
+frontend/.env
 
 # OS
 .DS_Store

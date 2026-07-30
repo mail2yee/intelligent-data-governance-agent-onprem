@@ -13,6 +13,13 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# Vite bakes import.meta.env.VITE_* values into the built JS at build
+# time, not runtime - there's no way to change this after the image is
+# built, unlike the backend's .env (read at container startup). See
+# docker-compose.yml's `build.args` for how this gets set; matches
+# backend/app/main.py's require_api_key / API_KEY.
+ARG VITE_API_KEY=""
+ENV VITE_API_KEY=${VITE_API_KEY}
 RUN npm run build
 
 FROM nginx:alpine

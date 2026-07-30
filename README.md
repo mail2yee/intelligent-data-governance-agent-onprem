@@ -377,6 +377,14 @@ and see it fall back gracefully — edit `LLM_BASE_URL`/`LLM_MODEL`/
 `LLM_API_KEY` once the real on-prem gateway is known. See the comments in
 `backend/.env.example` for what each variable does.
 
+**Auth note:** every `/api/*` route is unauthenticated by default (`API_KEY`
+blank) — fine for local dev, but set `API_KEY` in `backend/.env` **and**
+matching `VITE_API_KEY` in the repo-root `.env` (rebuild the frontend image
+after changing it — Vite bakes it in at build time, see
+`frontend/Dockerfile`) before any real deployment. See HANDOFF.md's
+"Security review" section for exactly what this does and doesn't protect
+against.
+
 ```bash
 docker compose up --build
 ```

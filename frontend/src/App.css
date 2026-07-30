@@ -382,9 +382,10 @@ h1 {
   font-size: 12.5px;
   color: var(--text-secondary);
   margin-bottom: 14px;
-}
-.assistant-note b {
-  color: var(--text);
+  /* Reply text is rendered as plain text, not HTML (see chat.py/
+     DiscoverView.jsx's 2026-07-30 XSS fix) - preserves the \n line break
+     GREETING_REPLY relies on, since plain text collapses it otherwise. */
+  white-space: pre-wrap;
 }
 .thinking-toggle {
   background: none;
@@ -912,6 +913,8 @@ h1 {
 }
 .copilot-answer {
   margin-top: 4px;
+  /* Same as .assistant-note - plain text now, not HTML. */
+  white-space: pre-wrap;
 }
 .copilot-input-row {
   display: flex;

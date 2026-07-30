@@ -45,6 +45,21 @@ class Settings(BaseSettings):
     datahub_api_url: str = "http://localhost:8080"
     datahub_api_token: str = ""
 
+    # Shared-secret gate on every /api/* route (see main.py's
+    # require_api_key) - checked against the client's X-API-Key header.
+    # Empty (the default) means auth is disabled, matching this repo's
+    # existing convention for optional integrations - convenient for local
+    # dev, but **a real value must be set before any real deployment**,
+    # same caveat as docker-compose.yml's POSTGRES_PASSWORD default.
+    # Added 2026-07-30 in response to a security review that flagged this
+    # API having zero authentication at all. Deliberately scoped: this is
+    # a coarse, single shared secret (blocks anonymous/external traffic),
+    # not per-user identity - it does NOT fix submit_approval()'s separate
+    # gap (nothing verifies the caller actually *is* the owner_email they
+    # claim to be in the request body). That needs real per-user auth
+    # (company SSO/OIDC) to close properly; this is an interim measure.
+    api_key: str = ""
+
     # WrenAI semantic layer project directory (see ../../wren/project and
     # integrations/wrenai_client.py). Resolved relative to the process's
     # working directory, which differs between local dev (run from

@@ -3,7 +3,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -35,17 +35,36 @@ app.add_middleware(
 )
 
 
+async def require_api_key(x_api_key: str = Header(default="")) -> None:
+    """Shared-secret gate for every route on `api_router` below - see the
+    comment on `settings.api_key` for what this does and doesn't cover.
+    Empty `settings.api_key` (the default) disables this check entirely,
+    same convention as this app's other optional integrations."""
+    if not settings.api_key:
+        return
+    if x_api_key != settings.api_key:
+        raise HTTPException(status_code=401, detail="missing or invalid API key")
+
+
+# Every route below requires X-API-Key (when settings.api_key is set) -
+# using a router rather than per-route dependencies so a route added here
+# later is protected by default instead of by remembering to add it.
+# /health stays on the bare `app` below, unauthenticated - status checks
+# (docker healthchecks, load balancers) shouldn't need a secret.
+api_router = APIRouter(dependencies=[Depends(require_api_key)])
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 
-@app.get("/api/catalog")
+@api_router.get("/api/catalog")
 async def get_catalog():
     return await datahub_client.get_catalog()
 
 
-@app.get("/api/catalog/{product_id}/connection")
+@api_router.get("/api/catalog/{product_id}/connection")
 async def get_connection_meta(product_id: str):
     catalog = await datahub_client.get_catalog()
     item = catalog.get(product_id)
@@ -59,7 +78,7 @@ async def get_connection_meta(product_id: str):
     }
 
 
-@app.post("/api/chat")
+@api_router.post("/api/chat")
 async def chat(request: Request):
     payload = await request.json()
     user_msg = payload.get("message", "").strip()
@@ -96,7 +115,7 @@ def _ticket_to_dict(ticket: Ticket) -> dict:
     }
 
 
-@app.post("/api/tickets")
+@api_router.post("/api/tickets")
 async def create_ticket(request: Request):
     payload = await request.json()
     products = payload["products"]
@@ -141,7 +160,7 @@ async def create_ticket(request: Request):
     return {"ticket_id": ticket_id, "camunda_status": camunda_result.status}
 
 
-@app.get("/api/tickets")
+@api_router.get("/api/tickets")
 async def list_tickets():
     async with async_session() as session:
         result = await session.execute(
@@ -151,7 +170,7 @@ async def list_tickets():
         return [_ticket_to_dict(t) for t in tickets]
 
 
-@app.post("/api/tickets/{ticket_id}/approvals")
+@api_router.post("/api/tickets/{ticket_id}/approvals")
 async def submit_approval(ticket_id: str, request: Request):
     payload = await request.json()
     owner_email = payload["owner_email"]
@@ -200,3 +219,6 @@ async def submit_approval(ticket_id: str, request: Request):
     logger.info("Ticket %s Camunda task completion: %s", ticket_id, camunda_status)
 
     return {"status": "success"}
+
+
+app.include_router(api_router)

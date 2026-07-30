@@ -20,7 +20,7 @@ export default function CopilotDock({ t, lang }) {
     setOpen((wasOpen) => {
       const next = !wasOpen
       if (next && messages.length === 0) {
-        setMessages([{ id: ++msgSeq, sender: 'bot', kind: 'html', html: t('copilotGreeting') }])
+        setMessages([{ id: ++msgSeq, sender: 'bot', kind: 'text', text: t('copilotGreeting') }])
       }
       return next
     })
@@ -30,7 +30,7 @@ export default function CopilotDock({ t, lang }) {
     const text = input.trim()
     if (!text) return
     setInput('')
-    setMessages((prev) => [...prev, { id: ++msgSeq, sender: 'user', kind: 'html', html: text }])
+    setMessages((prev) => [...prev, { id: ++msgSeq, sender: 'user', kind: 'text', text }])
 
     const botId = ++msgSeq
     setMessages((prev) => [...prev, { id: botId, sender: 'bot', kind: 'loading', steps: [], answer: '' }])
@@ -76,7 +76,7 @@ export default function CopilotDock({ t, lang }) {
         <div className="copilot-body" ref={bodyRef}>
           {messages.map((m) => (
             <div className={`copilot-msg ${m.sender}`} key={m.id}>
-              {m.kind === 'html' && <span dangerouslySetInnerHTML={{ __html: m.html }} />}
+              {m.kind === 'text' && <span>{m.text}</span>}
               {m.kind === 'loading' && <ThinkingDots label={t('thinking')} />}
               {m.kind === 'error' && t('toastFailed')}
               {m.kind === 'streaming' && (
@@ -86,7 +86,7 @@ export default function CopilotDock({ t, lang }) {
                       {s}
                     </div>
                   ))}
-                  {m.answer && <div className="copilot-answer" dangerouslySetInnerHTML={{ __html: m.answer }} />}
+                  {m.answer && <div className="copilot-answer">{m.answer}</div>}
                 </>
               )}
             </div>

@@ -94,7 +94,7 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
       {phase !== 'idle' && (
         <div>
           {(phase === 'done' || phase === 'loading' || phase === 'empty') && note && (
-            <div className="assistant-note" dangerouslySetInnerHTML={{ __html: note }} />
+            <div className="assistant-note">{note}</div>
           )}
 
           <p className="results-meta">

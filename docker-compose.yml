@@ -94,7 +94,15 @@ services:
 
   frontend:
     image: ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-frontend:latest
-    build: ./frontend
+    build:
+      context: ./frontend
+      # Vite bakes VITE_API_KEY into the built JS at build time (not
+      # read at container startup, unlike backend's env_file) - must
+      # match backend's API_KEY (backend/.env) for requests to succeed
+      # once API_KEY is actually set. Read from the repo-root .env (see
+      # .env.example), same file POSTGRES_PASSWORD already uses.
+      args:
+        VITE_API_KEY: ${VITE_API_KEY:-}
     # Forced to amd64 for the same reason as backend's pin above, just a
     # different root cause: this had no platform pin at all when first
     # pushed, so it silently built for the dev machine's native arch

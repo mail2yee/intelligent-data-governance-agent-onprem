@@ -47,8 +47,13 @@ NOT_FOUND_REPLY = {
     "en": "Sorry, no data subject in our catalog matches your request, so I can't recommend one or start a request for it.",
 }
 GREETING_REPLY = {
-    "zh": "您好！我是<b>小幫手</b>，很高興為您服務！<br>您可以直接描述您的報表或分析需求，我將為您在資料目錄中檢索並推薦最適合的資料主體。",
-    "en": "Hi, I'm your <b>Assistant</b>! Happy to help.<br>Describe your reporting need and I'll search the catalog and recommend the most suitable data subjects for you.",
+    # Plain text, not HTML - the frontend renders this (and every other
+    # reply string here, including raw LLM output) as plain text, not
+    # dangerouslySetInnerHTML (see the 2026-07-30 XSS fix in
+    # DiscoverView.jsx/CopilotDock.jsx). Newline relies on the frontend's
+    # `white-space: pre-wrap` CSS, not an HTML <br>.
+    "zh": "您好！我是小幫手，很高興為您服務！\n您可以直接描述您的報表或分析需求，我將為您在資料目錄中檢索並推薦最適合的資料主體。",
+    "en": "Hi, I'm your Assistant! Happy to help.\nDescribe your reporting need and I'll search the catalog and recommend the most suitable data subjects for you.",
 }
 
 
@@ -184,10 +189,14 @@ def local_rule_match(user_msg: str, lang: str, catalog: dict) -> tuple[list[str]
         if not item:
             continue
         if any(k.lower() in msg_lower for k in keywords):
+            # Plain text - item['name'] ultimately comes from the DataHub
+            # catalog, so it isn't safe to splice into an HTML string (see
+            # the 2026-07-30 XSS fix - the frontend renders this as plain
+            # text, not HTML, same as every other reply here).
             reply = (
-                f"💡 我為您找到了 <b>{item['name']}</b>（{item.get('maturity_level', '')} 級，品質分 {item.get('data_quality_score', '')}）。"
+                f"💡 我為您找到了 {item['name']}（{item.get('maturity_level', '')} 級，品質分 {item.get('data_quality_score', '')}）。"
                 if lang == "zh"
-                else f"💡 I found <b>{item['name']}</b> ({item.get('maturity_level', '')}-certified, quality score {item.get('data_quality_score', '')})."
+                else f"💡 I found {item['name']} ({item.get('maturity_level', '')}-certified, quality score {item.get('data_quality_score', '')})."
             )
             return [product_id], reply
     return [], NOT_FOUND_REPLY[lang]
