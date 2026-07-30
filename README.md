@@ -306,8 +306,11 @@ just the *where*.
 - `chat.py` — the chat/search assistant: greeting fast-path
   (`is_greeting`), the zero-hallucination prompt (`build_prompt`), the
   local keyword fallback (`local_rule_match`) used only when the LLM is
-  unreachable, and `run_chat()`, the async generator that yields the SSE
-  `step` / `token` / `final` events.
+  unreachable, `keyword_search()` (the default "general search" mode -
+  plain multi-keyword AND `ILIKE` against `data_products.search_text`,
+  no LLM involved - see HANDOFF.md), and `run_chat(..., mode="ai" |
+  "keyword")`, the async generator that yields the SSE `step` / `token`
+  / `final` events.
 - `config.py` — one `pydantic-settings` field per `.env` variable (LLM /
   Camunda / DataHub endpoints, CORS origins, fallback approvers). Any new
   env-tunable value belongs here, not scattered as a literal elsewhere.
@@ -350,7 +353,9 @@ just the *where*.
 - `i18n.js` — `makeT(lang)` returns a `t(key)` translator; a test checks
   zh/en key parity so the two languages can't silently drift apart.
 - `components/DiscoverView.jsx` — search hero, result cards, the live
-  "reasoning steps" disclosure.
+  "reasoning steps" disclosure, and the general/AI search mode toggle
+  (persisted in `localStorage`, defaults to general/keyword search - see
+  HANDOFF.md).
 - `components/ApprovalsView.jsx` + `TicketRow.jsx` — expandable ticket
   rows, approve/reject actions, the SLA warning banner.
 - `components/CopilotDock.jsx` — the docked "小幫手" assistant panel,

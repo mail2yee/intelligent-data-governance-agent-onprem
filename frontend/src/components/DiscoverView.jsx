@@ -9,20 +9,34 @@ const CHIPS = [
   { key: 'chip3', qZh: '員工薪資查詢', qEn: 'employee salary lookup' },
 ]
 
+// Persisted like lang/theme - a search-mode preference, not a per-query
+// setting (see the 2026-07-31 design discussion: default to plain
+// keyword search, same as Google's "AI Mode" toggle pattern).
+const SEARCH_MODE_KEY = 'dgo_search_mode'
+
 export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
   const [query, setQuery] = useState('')
+  const [mode, setMode] = useState(() => {
+    const saved = localStorage.getItem(SEARCH_MODE_KEY)
+    return saved === 'ai' ? 'ai' : 'keyword'
+  })
   const [phase, setPhase] = useState('idle') // idle | loading | done | empty | error
   const [note, setNote] = useState('')
   const [hits, setHits] = useState([])
   const [steps, setSteps] = useState([])
   const [stepsOpen, setStepsOpen] = useState(false)
 
+  function selectMode(next) {
+    setMode(next)
+    localStorage.setItem(SEARCH_MODE_KEY, next)
+  }
+
   async function runSearch(q) {
     if (!q.trim()) {
       setPhase('idle')
       return
     }
-    console.log('[DGO] runSearch:', q)
+    console.log('[DGO] runSearch:', q, 'mode:', mode)
     setPhase('loading')
     setNote('')
     setHits([])
@@ -30,7 +44,7 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
     setStepsOpen(true) // auto-expand live while steps are actually arriving
 
     let accumulated = ''
-    await streamChat(q, lang, {
+    await streamChat(q, lang, mode, {
       onStep: (text) => setSteps((prev) => [...prev, text]),
       onToken: (text) => {
         accumulated += text
@@ -71,6 +85,22 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
           />
           <button type="button" onClick={() => runSearch(query)}>
             {t('searchBtn')}
+          </button>
+        </div>
+        <div className="search-mode-toggle" role="group">
+          <button
+            type="button"
+            className={`mode-pill${mode === 'keyword' ? ' active' : ''}`}
+            onClick={() => selectMode('keyword')}
+          >
+            {t('searchModeKeyword')}
+          </button>
+          <button
+            type="button"
+            className={`mode-pill${mode === 'ai' ? ' active' : ''}`}
+            onClick={() => selectMode('ai')}
+          >
+            {t('searchModeAi')}
           </button>
         </div>
         <div className="chips">

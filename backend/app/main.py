@@ -83,11 +83,12 @@ async def chat(request: Request):
     payload = await request.json()
     user_msg = payload.get("message", "").strip()
     lang = "en" if payload.get("lang") == "en" else "zh"
-    logger.info("Chat request: %r (lang=%s)", user_msg, lang)
+    mode = "keyword" if payload.get("mode") == "keyword" else "ai"
+    logger.info("Chat request: %r (lang=%s, mode=%s)", user_msg, lang, mode)
     catalog = await datahub_client.get_catalog()
 
     return StreamingResponse(
-        run_chat(user_msg, lang, catalog),
+        run_chat(user_msg, lang, catalog, mode),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

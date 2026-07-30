@@ -43,10 +43,11 @@ async def test_chat_endpoint_streams_sse(client, monkeypatch):
 
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog):
+    async def _fake_run_chat(user_msg, lang, catalog, mode):
         captured["user_msg"] = user_msg
         captured["lang"] = lang
         captured["catalog"] = catalog
+        captured["mode"] = mode
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
     monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
@@ -58,13 +59,14 @@ async def test_chat_endpoint_streams_sse(client, monkeypatch):
     assert captured["user_msg"] == "hello there"
     assert captured["lang"] == "zh"  # defaults to zh when "lang" is omitted
     assert captured["catalog"] == {"p1": {"id": "p1", "name": "Product One"}}
+    assert captured["mode"] == "ai"  # defaults to ai when "mode" is omitted
 
 
 async def test_chat_endpoint_respects_explicit_en_lang(client, monkeypatch):
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog):
+    async def _fake_run_chat(user_msg, lang, catalog, mode):
         captured["lang"] = lang
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
@@ -72,6 +74,34 @@ async def test_chat_endpoint_respects_explicit_en_lang(client, monkeypatch):
 
     await client.post("/api/chat", json={"message": "hi", "lang": "en"})
     assert captured["lang"] == "en"
+
+
+async def test_chat_endpoint_passes_keyword_mode_through(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {})
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog, mode):
+        captured["mode"] = mode
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    await client.post("/api/chat", json={"message": "hi", "mode": "keyword"})
+    assert captured["mode"] == "keyword"
+
+
+async def test_chat_endpoint_ignores_unknown_mode_value(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {})
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog, mode):
+        captured["mode"] = mode
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    await client.post("/api/chat", json={"message": "hi", "mode": "bogus"})
+    assert captured["mode"] == "ai"
 
 
 async def test_create_and_list_ticket(client, monkeypatch):

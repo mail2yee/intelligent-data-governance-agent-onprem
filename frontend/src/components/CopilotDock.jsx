@@ -37,7 +37,10 @@ export default function CopilotDock({ t, lang }) {
     scrollDown()
 
     let accumulated = ''
-    await streamChat(text, lang, {
+    // Always AI mode here - the assistant dock is inherently conversational
+    // (see DiscoverView.jsx for the general/AI search toggle, which only
+    // applies to the Discover search box, not this chat panel).
+    await streamChat(text, lang, 'ai', {
       onStep: (stepText) => {
         setMessages((prev) =>
           prev.map((m) => (m.id === botId ? { ...m, kind: 'streaming', steps: [...m.steps, stepText] } : m))

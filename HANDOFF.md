@@ -547,6 +547,55 @@ above, see the review discussion for full detail):
 - CORS origin and TLS termination need explicit confirmation/config at
   actual deployment time, not just left at their local-dev defaults.
 
+## General search / AI search toggle (2026-07-31)
+
+Added a Google "AI Mode"-style toggle on the Discover search box (not the
+Copilot dock, which stays inherently conversational) - user-requested
+after noticing not everyone wants natural-language search; some just
+want literal keyword search. Two modes, persisted in `localStorage`
+(`dgo_search_mode`) as a durable per-user preference, not a per-query
+setting - defaults to **keyword** (general search first, matching the
+Google pattern the user described):
+
+- **`mode=keyword`** (default): `chat.py`'s new `keyword_search()` -
+  plain `ILIKE` substring matching against `data_products.search_text`,
+  multiple keywords (split on whitespace) all required to match (AND).
+  No LLM/WrenAI call at all - `run_chat()` yields a single `final` SSE
+  event immediately, no `step`/`token` events.
+- **`mode=ai`**: the existing LLM + WrenAI semantic-layer chain,
+  unchanged.
+
+**Why plain `ILIKE` AND, not Postgres full-text search** (`tsvector`/
+`to_tsquery`), even though the latter has native multi-keyword AND
+support: confirmed this catalog's Chinese content has no whitespace
+between words, so Postgres's default text-search parser can't tokenize
+it into sub-string-matchable words the way `ILIKE` naturally does -
+`to_tsvector` would treat an entire Chinese phrase as one token. Proper
+CJK-aware full-text search needs an extra extension (`zhparser`, not
+built-in) - unjustified complexity at this catalog's size (a few dozen
+rows at most), where a bare sequential scan is sub-millisecond anyway.
+
+**English input** was a related question the user raised: `search_text`
+already contains the catalog's English fields (`name`, `tables_joined`)
+verbatim, so an English keyword that literally appears in that text
+(e.g. "capacity") already works with zero extra effort - confirmed via a
+live test (`curl .../api/chat` with `mode: "keyword"`, message
+`"capacity"`, returned the correct single match). What does *not* work,
+by design: an English word whose only match is a *different-language
+concept* in the catalog (e.g. "capacity" needing to match a
+description that only says "產能", not "capacity") - this is a
+translation problem, not a script-folding one (unlike Traditional/
+Simplified, which OpenCC handles mechanically), so it's out of scope for
+keyword mode; a query like that is what AI mode is for. Decided not to
+build a bilingual synonym/glossary table for this - not worth the
+maintenance burden until a real, specific term gap shows up in practice.
+
+Verified end-to-end against the real running app (real DataHub-sourced
+catalog, not mocks): a two-keyword AND query, a single Chinese keyword
+matching two catalog entries, a no-match query, and confirmed omitting
+`mode` entirely still defaults to the old AI-mode behavior (greeting
+fast-path included) - no regression for existing callers.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

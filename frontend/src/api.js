@@ -61,12 +61,12 @@ export async function submitApproval(ticketId, { owner_email, decision, reason }
 // instead of waiting for one big JSON blob. Ported from the PoC's
 // streamChat() - see HANDOFF.md "Chat / search assistant" for why this
 // has to be a real stream, not a fake staggered reveal.
-export async function streamChat(message, lang, { onStep, onToken, onFinal, onError } = {}) {
+export async function streamChat(message, lang, mode, { onStep, onToken, onFinal, onError } = {}) {
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ message, lang }),
+      body: JSON.stringify({ message, lang, mode }),
     })
     if (!res.ok || !res.body) throw new Error('HTTP ' + res.status)
     const reader = res.body.getReader()

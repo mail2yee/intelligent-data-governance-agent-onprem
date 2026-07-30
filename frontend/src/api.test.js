@@ -46,7 +46,7 @@ describe('streamChat', () => {
     global.fetch.mockResolvedValue(makeSSEResponse(events))
 
     const seen = []
-    await streamChat('hi', 'en', {
+    await streamChat('hi', 'en', 'ai', {
       onStep: (t) => seen.push(['step', t]),
       onToken: (t) => seen.push(['token', t]),
       onFinal: (evt) => seen.push(['final', evt]),
@@ -64,7 +64,7 @@ describe('streamChat', () => {
     global.fetch.mockResolvedValue(makeSSEResponse(events, { splitMidFrame: true }))
 
     let final = null
-    await streamChat('hi', 'en', { onFinal: (evt) => (final = evt) })
+    await streamChat('hi', 'en', 'ai', { onFinal: (evt) => (final = evt) })
 
     expect(final).not.toBeNull()
     expect(final.reply).toBe('ok')
@@ -75,13 +75,13 @@ describe('streamChat', () => {
       makeSSEResponse([{ type: 'final', reply: '', matched_products: [], thinking_steps: [] }])
     )
 
-    await streamChat('我想分析產能', 'zh', {})
+    await streamChat('我想分析產能', 'zh', 'keyword', {})
 
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/chat',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ message: '我想分析產能', lang: 'zh' }),
+        body: JSON.stringify({ message: '我想分析產能', lang: 'zh', mode: 'keyword' }),
       })
     )
   })
@@ -90,7 +90,7 @@ describe('streamChat', () => {
     global.fetch.mockRejectedValue(new Error('network down'))
 
     let error = null
-    await streamChat('hi', 'en', { onError: (e) => (error = e) })
+    await streamChat('hi', 'en', 'ai', { onError: (e) => (error = e) })
 
     expect(error).not.toBeNull()
     expect(error.message).toBe('network down')
@@ -100,7 +100,7 @@ describe('streamChat', () => {
     global.fetch.mockResolvedValue({ ok: false, status: 500, body: null })
 
     let error = null
-    await streamChat('hi', 'en', { onError: (e) => (error = e) })
+    await streamChat('hi', 'en', 'ai', { onError: (e) => (error = e) })
 
     expect(error).not.toBeNull()
   })

@@ -246,6 +246,31 @@ h1 {
 .search-box button:hover {
   background: var(--accent-hover);
 }
+.search-mode-toggle {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 10px;
+}
+.mode-pill {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mode-pill:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.mode-pill.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 .chips {
   display: flex;
   gap: 8px;

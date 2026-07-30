@@ -7,7 +7,10 @@ stream via the same step/token/final SSE event shape.
 import json
 from collections.abc import AsyncIterator
 
+from sqlalchemy import select
+
 from .config import settings
+from .db import DataProduct, async_session
 from .integrations import wrenai_client
 from .integrations.llm_client import stream_chat_completion
 
@@ -202,13 +205,62 @@ def local_rule_match(user_msg: str, lang: str, catalog: dict) -> tuple[list[str]
     return [], NOT_FOUND_REPLY[lang]
 
 
-async def run_chat(user_msg: str, lang: str, catalog: dict) -> AsyncIterator[str]:
-    """Async generator of SSE event strings - step / token / final."""
+RESULTS_FOUND_REPLY = {
+    "zh": lambda n: f"為您找到 {n} 筆符合的資料主體。",
+    "en": lambda n: f"Found {n} matching data subject{'' if n == 1 else 's'}.",
+}
+
+
+async def keyword_search(user_msg: str, lang: str, catalog: dict) -> tuple[list[str], str]:
+    """Default "general search" mode (as opposed to "AI search" -
+    see the 2026-07-31 design discussion): plain substring matching
+    against data_products.search_text, no LLM/WrenAI involved. Multiple
+    keywords (split on whitespace) must ALL match (AND), same
+    catalog-mirror table the AI-mode SQL path already queries via
+    WrenAI - see wrenai_client.sync_catalog()'s docstring for why a
+    Postgres table exists in the first place.
+
+    Deliberately not Postgres full-text search (tsvector/to_tsquery):
+    confirmed this catalog's Chinese content has no whitespace between
+    words, so Postgres's default parser can't tokenize it into
+    sub-string-matchable words the way ILIKE naturally does - multiple
+    ILIKE clauses ANDed together is the correct choice here, not a
+    simplification.
+    """
+    await wrenai_client.sync_catalog(catalog)
+    keywords = [kw.strip() for kw in user_msg.split() if kw.strip()]
+    if not keywords:
+        return [], NOT_FOUND_REPLY[lang]
+
+    async with async_session() as session:
+        stmt = select(DataProduct.id)
+        for kw in keywords:
+            stmt = stmt.where(DataProduct.search_text.ilike(f"%{kw}%"))
+        result = await session.execute(stmt)
+        matched = [pid for (pid,) in result.all() if pid in catalog]
+
+    reply = RESULTS_FOUND_REPLY[lang](len(matched)) if matched else NOT_FOUND_REPLY[lang]
+    return matched, reply
+
+
+async def run_chat(user_msg: str, lang: str, catalog: dict, mode: str = "ai") -> AsyncIterator[str]:
+    """Async generator of SSE event strings - step / token / final.
+
+    `mode="keyword"` is the default "general search" path (see
+    keyword_search() above) - no LLM/WrenAI call, no step/token events,
+    just an immediate final event. `mode="ai"` (default, for backward
+    compatibility) is everything below: greeting fast-path, then the
+    LLM + semantic-layer verification chain."""
     thinking_steps: list[str] = []
 
     def step(text: str) -> str:
         thinking_steps.append(text)
         return sse_event("step", text=text)
+
+    if mode == "keyword":
+        matched, reply = await keyword_search(user_msg, lang, catalog)
+        yield sse_event("final", reply=reply, matched_products=matched, thinking_steps=thinking_steps)
+        return
 
     if is_greeting(user_msg):
         yield step("💬 偵測到日常問候，直接快速回覆。")

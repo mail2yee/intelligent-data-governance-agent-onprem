@@ -7,10 +7,40 @@ from app.chat import (
     NOT_FOUND_REPLY,
     _extract_sql,
     is_greeting,
+    keyword_search,
     local_rule_match,
     run_chat,
     sse_event,
 )
+
+KEYWORD_CATALOG = {
+    "customer-capacity-allocation": {
+        "name": "Specific Customer Capacity Allocation",
+        "description": "為特定VIP客戶配置的晶圓代工產能。",
+        "owner": "capacity_director@example.com",
+        "maturity_level": "Gold",
+        "data_quality_score": "99%",
+        "frequency": "DAILY",
+        "tables_joined": "capacity_plan, customer_commitment",
+        "db_type": "PostgreSQL",
+        "db_host": "h",
+        "db_port": "5432",
+        "db_schema": "capacity_mgmt",
+    },
+    "move-forecast-summary": {
+        "name": "FAB Production Move Forecast Summary",
+        "description": "晶圓廠生產Move與 WIP 預估。",
+        "owner": "fab_ops_owner@example.com",
+        "maturity_level": "Gold",
+        "data_quality_score": "98%",
+        "frequency": "HOURLY",
+        "tables_joined": "wip_moves, tool_bottleneck",
+        "db_type": "PostgreSQL",
+        "db_host": "h",
+        "db_port": "5432",
+        "db_schema": "production_forecast",
+    },
+}
 
 CATALOG = {
     "customer-capacity-allocation": {
@@ -68,6 +98,43 @@ def test_local_rule_match_no_match():
     matched, reply = local_rule_match("what is the weather", "en", CATALOG)
     assert matched == []
     assert reply == NOT_FOUND_REPLY["en"]
+
+
+async def test_keyword_search_all_keywords_must_match():
+    matched, reply = await keyword_search("capacity 客戶", "zh", KEYWORD_CATALOG)
+    assert matched == ["customer-capacity-allocation"]
+    assert "1" in reply
+
+
+async def test_keyword_search_single_keyword_matching_both_returns_both():
+    # "晶圓" (wafer) appears in both catalog entries' descriptions.
+    matched, reply = await keyword_search("晶圓", "zh", KEYWORD_CATALOG)
+    assert set(matched) == {"customer-capacity-allocation", "move-forecast-summary"}
+    assert "2" in reply
+
+
+async def test_keyword_search_no_match_returns_not_found_reply():
+    matched, reply = await keyword_search("nonexistent keyword", "en", KEYWORD_CATALOG)
+    assert matched == []
+    assert reply == NOT_FOUND_REPLY["en"]
+
+
+async def test_keyword_search_blank_query_returns_not_found_without_querying_db():
+    matched, reply = await keyword_search("   ", "en", KEYWORD_CATALOG)
+    assert matched == []
+    assert reply == NOT_FOUND_REPLY["en"]
+
+
+async def test_run_chat_keyword_mode_yields_only_final_event_no_llm_call(monkeypatch):
+    async def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called in keyword mode")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _should_not_be_called)
+
+    events = await _collect_events(run_chat("capacity 客戶", "zh", KEYWORD_CATALOG, mode="keyword"))
+    assert [e["type"] for e in events] == ["final"]
+    assert events[0]["matched_products"] == ["customer-capacity-allocation"]
 
 
 async def _collect_events(agen):
