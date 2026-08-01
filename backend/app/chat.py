@@ -5,14 +5,17 @@ stream via the same step/token/final SSE event shape.
 """
 
 import json
+import logging
 from collections.abc import AsyncIterator
 
 from sqlalchemy import select
 
 from .config import settings
-from .db import DataProduct, async_session
+from .db import DataProduct, UnmatchedQuery, async_session
 from .integrations import wrenai_client
 from .integrations.llm_client import stream_chat_completion
+
+logger = logging.getLogger("dgo")
 
 GREETING_WORDS = {
     "hi",
@@ -35,19 +38,99 @@ GREETING_WORDS = {
     "晚安",
 }
 
+# Extra words that only ever show up as small talk *right after* a
+# greeting - if every whitespace-separated word in the message is either
+# part of a GREETING_WORDS phrase or one of these, it's still just
+# chit-chat no matter how long the sentence spells it out. Replaces an
+# earlier character-length heuristic (`len(cleaned) <= 12`) that
+# misclassified e.g. "hi how are you" (14 chars) as a real catalog
+# request just for being a couple characters over an arbitrary cutoff -
+# confirmed via a live test against the real running app (2026-07-31).
+# English only, since it's whitespace-tokenized; see CHITCHAT_PHRASES_ZH
+# below for Chinese, which has no whitespace between words for this
+# word-by-word approach to work on.
+CHITCHAT_WORDS = {
+    "how",
+    "are",
+    "you",
+    "doing",
+    "today",
+    "going",
+    "it's",
+    "its",
+    "what's",
+    "whats",
+    "up",
+    "there",
+    "you're",
+    "youre",
+    "things",
+    "do",
+    # Texting shorthand - confirmed via live testing that "hi how r u?"
+    # (a very common casual phrasing) was missed without these.
+    "r",
+    "u",
+    "ur",
+    "hru",
+}
+
+# Whole Chinese greeting+filler phrases, matched as exact strings (after
+# is_greeting's own punctuation-stripping) rather than word-split, since
+# Chinese has no whitespace between words for CHITCHAT_WORDS' approach to
+# work on.
+CHITCHAT_PHRASES_ZH = {
+    "你好嗎",
+    "您好嗎",
+    "最近好嗎",
+    "近來好嗎",
+    "近況如何",
+    "最近如何",
+    "你好不好",
+}
+
+# Flattens multi-word GREETING_WORDS entries (e.g. "good morning") into
+# their individual words too, so "good morning, how are you" is
+# recognized word-by-word below even though "good"/"morning" aren't
+# themselves complete greetings on their own.
+_GREETING_TOKENS = {word for phrase in GREETING_WORDS for word in phrase.split()}
+_CHITCHAT_TOKENS = _GREETING_TOKENS | CHITCHAT_WORDS
+
 
 def is_greeting(msg: str) -> bool:
     cleaned = msg.strip().strip("!！?？.,。~、 ").lower()
     if not cleaned:
         return False
-    if cleaned in GREETING_WORDS:
+    if cleaned in GREETING_WORDS or cleaned in CHITCHAT_PHRASES_ZH:
         return True
-    return len(cleaned) <= 12 and any(g in cleaned for g in GREETING_WORDS)
+    if not any(g in cleaned for g in GREETING_WORDS):
+        return False
+    # cleaned only has punctuation stripped from its own start/end (see
+    # above) - a mid-sentence comma like "hello, how are you" would
+    # otherwise stay glued to "hello," as one token and never match
+    # _CHITCHAT_TOKENS's plain "hello".
+    words = [w for w in (w.strip(",.!?！？。～、") for w in cleaned.split()) if w]
+    return len(words) > 1 and all(w in _CHITCHAT_TOKENS for w in words)
 
 
 NOT_FOUND_REPLY = {
-    "zh": "抱歉，在我們的資料目錄中目前沒有找到符合您需求的資料主體，無法為您提供推薦或權限申請。",
-    "en": "Sorry, no data subject in our catalog matches your request, so I can't recommend one or start a request for it.",
+    # Includes scope + a concrete example, same spirit as GREETING_REPLY
+    # below - added 2026-07-31 after an LLM-based 3-way classification
+    # (greeting vs no-match vs match) proved unreliable on a small local
+    # model (it kept misclassifying genuinely off-topic messages like
+    # "what's the weather" as a greeting) - reverted to a plain 2-way
+    # match/no-match decision and folded the "here's how to ask" guidance
+    # into this single no-match reply instead, so it's helpful regardless
+    # of *why* nothing matched (off-topic, or a real but uncataloged need,
+    # or a rare greeting that slipped past is_greeting()'s keyword check).
+    "zh": (
+        "抱歉，目前資料目錄中沒有找到符合您需求的資料主體。我只能協助您尋找適合完成報表的資料主體，"
+        "請試著這樣問我：「我想分析特定客戶的產能與出貨預估」。"
+    ),
+    "en": (
+        "Sorry, no data subject in our catalog matches your request. I can only help you find data "
+        "subjects for a report — try asking me something like \"I want to analyze a customer's capacity "
+        'and shipment forecast".'
+    ),
 }
 GREETING_REPLY = {
     # Plain text, not HTML - the frontend renders this (and every other
@@ -55,8 +138,20 @@ GREETING_REPLY = {
     # dangerouslySetInnerHTML (see the 2026-07-30 XSS fix in
     # DiscoverView.jsx/CopilotDock.jsx). Newline relies on the frontend's
     # `white-space: pre-wrap` CSS, not an HTML <br>.
-    "zh": "您好！我是小幫手，很高興為您服務！\n您可以直接描述您的報表或分析需求，我將為您在資料目錄中檢索並推薦最適合的資料主體。",
-    "en": "Hi, I'm your Assistant! Happy to help.\nDescribe your reporting need and I'll search the catalog and recommend the most suitable data subjects for you.",
+    # Acknowledges small talk ("how are you") before explaining capability
+    # with a concrete example - a bare "hi, I'm your assistant" with no
+    # example left first-time users unsure what to actually type
+    # (2026-07-31 feedback).
+    "zh": (
+        "您好，我很好，謝謝關心！我是小幫手，可以協助您在資料目錄中找到適合完成報表的資料主體 (Data Subject)。\n"
+        "請直接描述您的報表或分析目的，例如「我想分析特定客戶的產能與出貨預估」，我會為您檢索並推薦最合適的資料主體。"
+    ),
+    "en": (
+        "Hi, I'm doing well, thanks for asking! I'm your Assistant — I can help you find the right "
+        "data subject(s) in our catalog to complete your report.\n"
+        "Just describe your reporting or analysis need, e.g. \"I want to analyze a customer's capacity "
+        "and shipment forecast\", and I'll search the catalog and recommend the best match."
+    ),
 }
 
 
@@ -64,13 +159,40 @@ def sse_event(event_type: str, **data) -> str:
     return f"data: {json.dumps({'type': event_type, **data}, ensure_ascii=False)}\n\n"
 
 
+async def record_unmatched_query(message: str, lang: str) -> None:
+    """Best-effort logging into UnmatchedQuery (db.py) for
+    scripts/review_unmatched_queries.py's offline review - never raises,
+    same fallback philosophy as the integrations/ clients, since a
+    logging failure must not break the actual chat response."""
+    try:
+        async with async_session() as session:
+            session.add(UnmatchedQuery(message=message, lang=lang))
+            await session.commit()
+    except Exception as e:
+        logger.warning("Failed to record unmatched query: %s", e)
+
+
 def build_prompt(user_msg: str, lang: str, catalog: dict) -> str:
+    """Deliberately a plain 2-way match/no-match decision, not a 3-way
+    classification that also tries to detect greetings - that was tried
+    and reverted 2026-07-31: a small local model kept misclassifying
+    genuinely off-topic messages (e.g. "what's the weather") as a
+    greeting, conflating categories that a weak model can't reliably
+    keep apart. Greeting detection stays entirely in is_greeting()'s
+    cheap keyword check (run_chat() tries that first, no LLM call) - if
+    a greeting slips past that, it just falls through to this prompt and
+    gets NOT_FOUND_REPLY, which is written to be a helpful answer
+    either way (see its own comment)."""
     knowledge_base = json.dumps(catalog, ensure_ascii=False)
     lang_name = "English" if lang == "en" else "Traditional Chinese (繁體中文)"
     not_found_sentence = NOT_FOUND_REPLY[lang]
     return f"""
     [Role]
-    You are a rigorous data governance expert for this organization's data catalog.
+    You are a rigorous data governance expert. Every user of this tool is
+    trying to find the right data subject(s) in this organization's data
+    catalog to complete a report or analysis - that is the only thing
+    this tool is for. Interpret every request through that lens: what
+    data subject(s) below would help the user build their report.
     The catalog currently contains these data subjects:
     {knowledge_base}
 
@@ -313,6 +435,7 @@ async def run_chat(user_msg: str, lang: str, catalog: dict, mode: str = "ai") ->
                 yield step(f"🏁 語意層驗證完畢，推薦：{json.dumps(matched_products)}")
             else:
                 yield step("⚠️ 判定此需求與資料目錄無關，已啟動 Zero Hallucination 攔截。")
+                await record_unmatched_query(user_msg, lang)
         else:
             not_found_markers = (
                 ["抱歉", "沒有找到"]
@@ -322,6 +445,7 @@ async def run_chat(user_msg: str, lang: str, catalog: dict, mode: str = "ai") ->
             if any(m.lower() in reply.lower() for m in not_found_markers):
                 matched_products = []
                 yield step("⚠️ 判定此需求與資料目錄無關，已啟動 Zero Hallucination 攔截。")
+                await record_unmatched_query(user_msg, lang)
             else:
                 yield step(f"🏁 任務規劃與執行完畢，推薦：{json.dumps(matched_products)}")
     except Exception as e:

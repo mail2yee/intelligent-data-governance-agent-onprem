@@ -596,6 +596,94 @@ matching two catalog entries, a no-match query, and confirmed omitting
 `mode` entirely still defaults to the old AI-mode behavior (greeting
 fast-path included) - no regression for existing callers.
 
+## Greeting detection fix + tightened prompt (2026-07-31)
+
+**Bug found via user testing**: "hi how are you?" got the zero-
+hallucination "no data subject matches your request" reply instead of a
+greeting - reproduced and root-caused against the real running app
+before fixing. `is_greeting()`'s old heuristic was `len(cleaned) <= 12
+and any(greeting word in cleaned)` - "hi how are you" is 14 characters
+after punctuation-stripping, one accidental character-count away from
+the arbitrary 12-char cutoff, so it fell through to the full LLM +
+WrenAI pipeline, which then (correctly, for what it was given) found
+nothing in the catalog matching "how are you" and reported zero
+hallucination as designed.
+
+**Fix**: replaced the length cutoff with a word-composition check -
+`is_greeting()` now returns true if every whitespace-separated word in
+the message is either part of a `GREETING_WORDS` phrase or one of a new
+`CHITCHAT_WORDS` set (how/are/you/doing/today/etc.), no matter how long
+the sentence spells it out. Chinese, having no whitespace between words,
+gets a separate `CHITCHAT_PHRASES_ZH` exact-match set (你好嗎, 最近好嗎,
+etc.) instead of word-splitting. Verified this doesn't reopen the
+original problem the length cutoff was guarding against (a real request
+that happens to start with a greeting word, e.g. "hi, I want to look at
+customer capacity data", must NOT get short-circuited to the canned
+greeting) - both a live curl test and a new parametrized pytest case
+cover this specifically.
+
+**Follow-up same day**: user immediately hit a second case - "hi how r
+u?" (texting shorthand) still fell through, since `r`/`u` weren't in
+`CHITCHAT_WORDS`. Added `r`, `u`, `ur`, `hru` to the set; verified
+against the real running app.
+
+**Also, per user feedback**: `GREETING_REPLY` now acknowledges "how are
+you"-style small talk before explaining capability with a concrete
+example query (previously just "I'm your Assistant, describe your
+need" - fine for a bare "hi" but gave a first-time user no example of
+what to actually type). And `build_prompt()`'s `[Role]` section now
+explicitly frames every request through "this tool exists to help you
+find data subject(s) for a report" rather than a generic "data
+governance expert" framing - the user's stated reasoning: every use of
+this tool is fundamentally about finding data to complete a report, so
+saying that plainly up front should help the LLM interpret ambiguous or
+terse requests better.
+
+**Tried and reverted same day: LLM-based 3-way classification.** To also
+catch greetings that slip past `is_greeting()`'s keyword check (new
+phrasing, another language), `build_prompt()` was extended to a 3-way
+decision - greeting / no-match / match - with `run_chat()` detecting a
+"greeting" classification via markers in the reply and short-circuiting
+before the WrenAI call. **Live-tested against the real local model
+(qwen2.5) and found unreliable**: it correctly caught the intended case
+("what's going on today") but also misclassified genuinely off-topic,
+non-greeting messages ("what is the weather like today", "please tell
+me a joke") as greetings - confirmed via direct curl tests, not
+assumed. Consistent with this repo's other documented small-model
+limitations (see the SQL-generation keyword-precision notes above) -
+adding a 3rd category gave a weak model more room to conflate things
+that were fine to distinguish under a plain 2-way decision.
+
+**Reverted to a plain 2-way `build_prompt()`** (match / no-match, same
+as originally) and removed the greeting-marker short-circuit from
+`run_chat()`. `is_greeting()`'s keyword check remains the *only* thing
+that catches greetings - no LLM involved in that decision anymore.
+`NOT_FOUND_REPLY` absorbed the "here's how to ask, with an example"
+guidance instead (same spirit as `GREETING_REPLY`), so it reads as
+helpful regardless of *why* nothing matched - off-topic, a real but
+uncataloged need, or a rare greeting that slipped through.
+
+**Added instead: offline, human-in-the-loop query mining.** Every
+`run_chat()` "no match" (both the semantic-layer-confirmed case and the
+text-marker fallback case) now logs the raw message via
+`chat.py`'s `record_unmatched_query()` into a new `unmatched_queries`
+table (`db.py`'s `UnmatchedQuery` - `message`, `lang`, `created_at`,
+`reviewed`). `backend/scripts/review_unmatched_queries.py` periodically
+sends unreviewed rows to the LLM as a batch, asking it to flag which
+look like greetings/chit-chat and suggest keywords - printed for a
+**human** to read and decide whether to actually add to
+`GREETING_WORDS`/`CHITCHAT_WORDS`/`CHITCHAT_PHRASES_ZH`, never applied
+automatically. This sidesteps the exact reliability problem just found:
+the same small model's judgment is fine here because a human is the
+final filter, not the request path. Verified end-to-end against the
+real running app: logged two genuinely off-topic messages, ran the
+script against real Postgres + real Ollama, got back suggestions
+(which, honestly, also mislabeled "weather"/"joke" as greetings - the
+LLM's classification skill didn't improve just by moving it offline,
+but the point of this design is that it doesn't need to: a human reads
+the output before anything takes effect), confirmed rows got marked
+`reviewed` and weren't resurfaced on a second run.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

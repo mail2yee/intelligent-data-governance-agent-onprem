@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -78,6 +78,36 @@ class DataProduct(Base):
     # sometimes emit Simplified keywords for a Traditional-Chinese catalog,
     # and plain ILIKE does no script folding).
     search_text: Mapped[str] = mapped_column(String)
+
+
+class UnmatchedQuery(Base):
+    """Chat messages that reached chat.py's full AI-search pipeline (not
+    caught by is_greeting()'s cheap keyword check) and ended up matching
+    zero catalog entries - logged for periodic offline review (see
+    scripts/review_unmatched_queries.py), not read by anything in the
+    live request path itself.
+
+    Why this exists: a live, per-request LLM classification of "is this
+    actually a greeting/chit-chat" was tried and reverted 2026-07-31 (a
+    small local model proved unreliable at that 3-way decision, see
+    chat.py's build_prompt() comment) - logging these instead and
+    reviewing them offline with an LLM as a human's triage assistant
+    (not an unsupervised decision-maker) sidesteps that reliability
+    problem entirely, since a human confirms any new keyword before it's
+    added to is_greeting()'s CHITCHAT_WORDS/GREETING_WORDS.
+    """
+
+    __tablename__ = "unmatched_queries"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    message: Mapped[str] = mapped_column(String)
+    lang: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    # Set by scripts/review_unmatched_queries.py once a row has been
+    # surfaced to a human for review - not "confirmed useful", just
+    # "already shown", so re-running the script doesn't resurface the
+    # same rows every time.
+    reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 engine = create_async_engine(settings.database_url, echo=False)

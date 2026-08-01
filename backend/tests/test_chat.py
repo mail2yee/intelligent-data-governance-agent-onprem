@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from sqlalchemy import select
 
 from app.chat import (
     GREETING_REPLY,
@@ -9,9 +10,11 @@ from app.chat import (
     is_greeting,
     keyword_search,
     local_rule_match,
+    record_unmatched_query,
     run_chat,
     sse_event,
 )
+from app.db import UnmatchedQuery, async_session
 
 KEYWORD_CATALOG = {
     "customer-capacity-allocation": {
@@ -56,12 +59,38 @@ CATALOG = {
 }
 
 
-@pytest.mark.parametrize("msg", ["hi", "Hello", "hey!", "你好", "早安", "hi there", "  hello  "])
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "hi",
+        "Hello",
+        "hey!",
+        "你好",
+        "早安",
+        "hi there",
+        "  hello  ",
+        "hi how are you?",
+        "hey what's up",
+        "hello, how are you doing today?",
+        "hi how r u?",
+        "你好嗎",
+        "您好嗎",
+    ],
+)
 def test_is_greeting_true(msg):
     assert is_greeting(msg) is True
 
 
-@pytest.mark.parametrize("msg", ["我想分析特定客戶投片產能與實際出貨預估", "what is gold maturity", ""])
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "我想分析特定客戶投片產能與實際出貨預估",
+        "what is gold maturity",
+        "",
+        "hi, I want to look at customer capacity data",
+        "hi customer capacity allocation report",
+    ],
+)
 def test_is_greeting_false(msg):
     assert is_greeting(msg) is False
 
@@ -275,6 +304,31 @@ async def test_run_chat_semantic_layer_uses_llm_sql_model_when_configured(monkey
     # First call (prose reply) uses the default model (None -> settings.llm_model);
     # second call (SQL generation) is explicitly routed to the configured SQL model.
     assert models_seen == [None, "llama3-groq-tool-use:8b"]
+
+
+async def test_run_chat_no_match_records_unmatched_query(monkeypatch):
+    monkeypatch.setattr(
+        "app.chat.stream_chat_completion",
+        _fake_stream_by_prompt(sql_reply="NO_MATCH", prose_reply="Sorry, nothing matches."),
+    )
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    await _collect_events(run_chat("what is the weather", "en", CATALOG))
+
+    async with async_session() as session:
+        rows = (await session.execute(select(UnmatchedQuery))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].message == "what is the weather"
+    assert rows[0].lang == "en"
+    assert rows[0].reviewed is False
+
+
+async def test_record_unmatched_query_fails_gracefully(monkeypatch):
+    def _broken_session():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.chat.async_session", _broken_session)
+    await record_unmatched_query("test", "en")  # must not raise
 
 
 async def test_run_chat_semantic_layer_no_match_short_circuits_before_wrenai(monkeypatch):

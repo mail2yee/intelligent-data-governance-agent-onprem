@@ -161,6 +161,24 @@ WrenAI code, judge model, or trial count) get appended to `evals/EVAL_LOG.md`
   end-to-end against a real local instance, including through the
   containerized backend.
 
+## Reviewing unmatched chat queries
+
+`chat.py`'s `run_chat()` logs every message that reaches the full AI
+pipeline and matches nothing (`db.py`'s `UnmatchedQuery` table) - a
+candidate list for greetings/chit-chat that `is_greeting()`'s keyword
+check missed. Periodically review them:
+
+```bash
+cd backend && python3 scripts/review_unmatched_queries.py
+```
+
+This sends unreviewed rows to the configured LLM as a *triage
+assistant*, printing suggested keywords for a human to read - it never
+edits `chat.py` itself. See HANDOFF.md's "Greeting detection fix"
+section for why this is offline/human-reviewed rather than a live,
+per-request classification (the latter was tried and reverted - a small
+local model wasn't reliable enough to trust unsupervised).
+
 ## Routes
 
 | Method | Path | Notes |
