@@ -11,6 +11,71 @@ judge or trial config) - not every ad-hoc local run.
 
 ---
 
+## 2026-08-03
+
+- Config: `DGO_EVAL_TRIALS=1` (dropped from 2 - see below), judge model
+  `qwen2.5:latest` (local Ollama), app models: `LLM_MODEL=qwen2.5:latest`,
+  `LLM_SQL_MODEL=llama3-groq-tool-use:8b`.
+- Context: first eval run since the Camunda 7 rewrite / local DataHub
+  hosting / API key + XSS fixes / greeting-detection work landed this
+  session. Required real troubleshooting before a clean run was possible,
+  worth recording in full:
+  1. **DataHub catalog pollution**: the shared local DataHub instance
+     (also used by the sibling `agent_mem0_poc` repo) had accumulated 42
+     unrelated, clearly-synthetic Faker-generated datasets (random
+     platforms/schemas, lorem-ipsum descriptions) alongside our own 3 -
+     confirmed via direct GraphQL inspection, then hard-deleted (leaving
+     only our 3) via `datahub delete by-filter --urn-file ... --hard`.
+  2. **Eval/environment mismatch**: `evals/test_chat_eval.py` hardcodes
+     expectations against `datahub_client.MOCK_CATALOG`'s specific ids
+     (e.g. `customer-capacity-allocation`), but the app was actually
+     serving real (cleaned) DataHub data with different, name-derived
+     slugs (`specific-customer-capacity-allocation`) - caused spurious
+     "fabricated product id" failures on the hard structural assertion.
+     Worked around by temporarily overriding `DATAHUB_API_URL` to an
+     unreachable address (via a throwaway `docker-compose.override.yml`,
+     removed after) so the app fell back to `MOCK_CATALOG` for the
+     duration of the run, matching the eval's actual assumption - not a
+     code fix, just how this suite needs to be run when DataHub is
+     otherwise configured and reachable.
+  3. **Local Ollama too slow for `DGO_EVAL_TRIALS=2-3`**: repeated runs at
+     the historical trial count hit `evals/test_chat_eval.py`'s own 60s
+     per-request httpx timeout - confirmed by timing a single `/api/chat`
+     call directly (over 60s). Dropped to `DGO_EVAL_TRIALS=1` to get a
+     clean run through on this machine; **not** a claim that 1 trial is
+     the right long-term setting - revisit trial count once run against
+     the company's real (presumably faster) gateway.
+
+| Golden query | Pass rate | Metrics evaluated |
+|---|---|---|
+| `zh-capacity` | 0.67 | 3 |
+| `zh-demand-orders` | 1.00 | 3 |
+| `zh-move-forecast` | 0.67 | 3 |
+| `zh-out-of-catalog-salary` | 0.00 | 1 |
+| `en-capacity` | 1.00 | 3 |
+| `en-out-of-catalog-weather` | 0.00 | 1 |
+
+- **Real finding, not noise**: both out-of-catalog (zero-hallucination)
+  queries scored a perfect 1.00 in the 2026-07-28 and 2026-07-29 runs
+  logged below - this run they both scored 0.00, reproducibly. The hard,
+  non-judged structural assertion still passed every time (matched
+  products stayed empty, no fabrication) - this is a `RecommendationPrecision`
+  *judge* score dropping, not a governance regression. Most likely cause:
+  `chat.py`'s `NOT_FOUND_REPLY` was changed this session (in response to
+  user feedback) to include a concrete example query ("try asking me
+  something like 'I want to analyze a customer's capacity and shipment
+  forecast'") so the reply is more instructive - but the judge's own
+  criteria ("penalize replies that recommend an unrelated... data subject")
+  very plausibly reads that example phrase itself as a spurious
+  recommendation for a weather/salary question, even though
+  `matched_products` correctly stayed `[]`. Worth a decision: accept this
+  as a known eval-metric quirk (the app's actual behavior is correct), or
+  scope `RecommendationPrecision` to only run on `golden.in_catalog`
+  queries (it currently runs unconditionally) since "don't recommend
+  anything" isn't really what that metric is designed to judge.
+
+---
+
 ## 2026-07-29
 
 - Config: `DGO_EVAL_TRIALS=2`, judge model `qwen2.5:latest` (local Ollama),
