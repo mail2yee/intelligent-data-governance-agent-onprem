@@ -684,6 +684,58 @@ but the point of this design is that it doesn't need to: a human reads
 the output before anything takes effect), confirmed rows got marked
 `reviewed` and weren't resurfaced on a second run.
 
+## Getting Camunda + Postgres into the office network (2026-08-04)
+
+First real office test surfaced a new constraint: the company's internal
+registries (Harbor, Nexus) don't mirror everything from Docker Hub -
+specifically, no Camunda image - and the company's own PostgreSQL is a
+heavyweight, centrally-managed HA offering, not something to casually
+point a dev docker-compose stack at. **Confirmed the office network can
+reach `ghcr.io` itself**, even though it can't reach Docker Hub directly
+- the same path already proven for `backend`/`frontend` (see the GHCR
+publish work earlier in this file) turns out to generalize to any
+third-party image, not just the ones this repo builds itself.
+
+**`scripts/mirror-image-to-ghcr.sh`** does the generic version of that:
+pull a public image at home, retag it under this repo's GHCR namespace,
+push it - a straight retag/push, not a rebuild, so nothing about how
+these images are configured changes (env vars/volumes in
+`docker-compose.yml`, same as always - mirroring an image is not the
+same thing as baking config into one, a distinction worth being explicit
+about since it came up as a real question this session). Both
+`docker-compose.yml`'s `camunda` and `postgres` services now reference
+`ghcr.io/mail2yee/...` instead of the public Docker Hub names.
+
+**Camunda**: self-hosting via this mirrored image is the actual
+long-term plan, not a stand-in - the company has no Camunda service to
+prefer instead.
+
+**Postgres is different, and deliberately scoped as a dev-environment
+choice, not a production one**: the company already has a managed HA
+Postgres service. Self-hosting a plain `postgres:16-alpine` container
+(mirrored the same way) is fine for a personal/team dev environment -
+raised and specifically confirmed with the user that this is what's
+being set up here, not a shared/production system, so the usual
+"don't route around the company's managed DB service" concern doesn't
+apply yet. **Revisit before any shared or production deployment**
+(including the eventual K8s move - `k8s/` is still just a placeholder):
+point `DATABASE_URL` at the company's real Postgres instead (no code
+change needed, this app's config already supports that swap) rather
+than trying to run a self-hosted Postgres Pod in K8s. On that specific
+K8s question, raised and answered directly: mirroring the image to GHCR
+has no bearing on Kubernetes storage handling either way (a Postgres
+container's data was already separated from the image via a volume
+mount, both in `docker-compose.yml` today and in whatever K8s manifest
+would eventually exist - `StatefulSet` + `PersistentVolumeClaim` is the
+correct K8s pattern for a self-hosted Postgres, regardless of which
+registry the image comes from) - but the *operational* burden of
+running your own HA/backups/patching in K8s is real and is itself
+another reason to prefer the company's managed service once this goes
+beyond a personal dev environment. Camunda doesn't have the same
+concern in the same way - its durable state lives in whatever database
+it's pointed at, not on local Pod disk, so it doesn't need its own PVC
+the way Postgres does.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

@@ -251,38 +251,37 @@ docker compose up --build
 ```
 This single command tests three things at once: whether the Docker
 daemon's registry mirror covers the base images (`python:3.11-slim`,
-`node:20-alpine`, `nginx:alpine`, `postgres:16-alpine` — many corporate
-Docker setups configure a transparent `registry-mirrors` entry in
-`daemon.json` for this, no Dockerfile change needed), whether `pip
-install` reaches an internal PyPI mirror, and whether `npm ci` reaches
-an internal npm mirror. If this works, nothing else in this section is
-needed.
+`node:20-alpine`, `nginx:alpine` — many corporate Docker setups
+configure a transparent `registry-mirrors` entry in `daemon.json` for
+this, no Dockerfile change needed), whether `pip install` reaches an
+internal PyPI mirror, and whether `npm ci` reaches an internal npm
+mirror. If this works, nothing else in this section is needed.
 
 **Step 2 — if `pip`/`npm` can't reach a mirror,** the image has to be
 built somewhere with internet access (i.e. at home) and gotten onto the
-company network some other way. Two options, both untested so far:
+company network some other way.
 
-- **Internal Docker registry** (the confirmed-to-exist one): build at
-  home, push there directly if reachable from home, or `docker save`
-  the image to a tarball and carry/copy it over if not, then `docker
-  load` on the office side.
-- **GHCR path (`ghcr.io`) — publish side done and confirmed working
-  (2026-07-28):** `docker-compose.yml`'s `backend`/`frontend` services
-  set `image:` to `ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`
-  alongside `build:`. Both images have actually been built and pushed
-  (`docker login ghcr.io -u mail2yee` with a `write:packages` PAT, then
-  `docker compose push`), and both packages are flipped to **public** —
-  confirmed by logging out locally and pulling both anonymously (no
-  `docker login` at all) successfully. So the office side really can
-  just be `git pull && docker compose pull && docker compose up -d`,
-  no PAT needed there.
-  **Still unconfirmed: whether `ghcr.io` itself (a different host than
-  `github.com`) is actually reachable through the office firewall** —
-  today's test only confirmed the publish side and that an arbitrary
-  internet connection can pull anonymously, not that the specific office
-  network can reach this specific host. That's what still needs testing
-  on-site. Revisit switching the packages back to private once that's
-  confirmed and this moves past the testing phase.
+- **Internal registries (Harbor, Nexus)**: confirmed 2026-08-04 these
+  exist but don't mirror everything - no Camunda image there, for one.
+  Still worth checking first for anything they *do* have (see below).
+- **GHCR path (`ghcr.io`) — confirmed working end-to-end, including from
+  the office (2026-08-04):** `docker-compose.yml`'s `backend`/`frontend`
+  services set `image:` to
+  `ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`
+  alongside `build:` (`docker compose build` at home tags it, `docker
+  compose push` publishes it). **`camunda` and `postgres` use the same
+  path now too** (`ghcr.io/mail2yee/camunda-bpm-platform:7.22.0`,
+  `ghcr.io/mail2yee/postgres:16-alpine`) - since neither is built by this
+  repo, `scripts/mirror-image-to-ghcr.sh` does the pull-retag-push for
+  those instead of `docker compose build`. All four images are flipped
+  to **public** — confirmed by logging out locally and pulling
+  anonymously (no `docker login` at all) successfully. So the office
+  side really can just be `git pull && docker compose pull && docker
+  compose up -d`, no PAT needed there.
+  **`ghcr.io` reachability from the office is now confirmed** (2026-08-04
+  - it's a different host than `github.com`, which was already known to
+  work, so this needed its own test). Revisit switching the packages
+  back to private once this moves past the testing phase.
 
 Either way, capture what happens at the office with
 `./scripts/collect-debug-log.sh` (or manually in `TESTING_LOG.md`) and

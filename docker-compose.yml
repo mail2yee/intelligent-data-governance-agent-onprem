@@ -1,6 +1,22 @@
 services:
+  # Mirrored to GHCR (2026-08-04) via scripts/mirror-image-to-ghcr.sh -
+  # confirmed the office network can't reach Docker Hub directly but CAN
+  # reach ghcr.io (same path already proven for backend/frontend below).
+  # This is a straight retag/push, not a rebuild - all config here still
+  # happens the same way, via environment/volumes, same as always.
+  # **Dev-environment choice, not a production plan**: self-hosting
+  # Postgres like this is fine for a personal/team dev environment, but
+  # the company has its own managed HA Postgres service - revisit before
+  # any shared/production deployment (K8s or otherwise), see HANDOFF.md.
+  # To refresh the version: re-run the mirror script with a new source
+  # tag, then update the tag below to match.
   postgres:
-    image: postgres:16-alpine
+    image: ghcr.io/mail2yee/postgres:16-alpine
+    # Pinned amd64 for the same reason as backend/frontend below - the
+    # mirrored image is intentionally amd64 (the company's real target),
+    # not this dev machine's native arch. Runs under QEMU emulation on
+    # Apple Silicon (slower, but only matters for local dev).
+    platform: linux/amd64
     environment:
       POSTGRES_USER: dgo
       # Defaults to a weak password so `docker compose up` works with zero
@@ -30,8 +46,17 @@ services:
   # own separate `datahub docker quickstart` stack, not part of this
   # compose file), and 8081 is taken by an unrelated project on this dev
   # machine.
+  # Mirrored to GHCR (2026-08-04) - the company's internal registries
+  # (Harbor, Nexus) don't have a Camunda image, but ghcr.io itself is
+  # reachable from the office - see scripts/mirror-image-to-ghcr.sh and
+  # the postgres service's comment above for the full reasoning (same
+  # mirroring approach, but unlike Postgres there's no company-provided
+  # Camunda service to prefer instead - self-hosting this one is the
+  # actual long-term plan, not just a dev convenience).
   camunda:
-    image: camunda/camunda-bpm-platform:7.22.0
+    image: ghcr.io/mail2yee/camunda-bpm-platform:7.22.0
+    # Pinned amd64 for the same reason as postgres above.
+    platform: linux/amd64
     ports:
       - "8082:8080"
     healthcheck:
