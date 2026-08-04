@@ -16,13 +16,13 @@ Camunda), and what business logic / UI direction to carry over.
 
 **重要修正（2026-07-29）：Camunda 公司實際用的是 7.22 版**，不是原本以為的 Camunda 8（Zeebe/gRPC）——是完全不同的產品（REST API，沒有 gRPC/job worker 模型）。`camunda_client.py` 已經整個重寫並拿真實的本機 `camunda/camunda-bpm-platform:7.22.0` container 實測驗證過。
 
-**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 63 個 pytest、前端 29 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 的 OpenAI-compatible 假設已經拿本機 Ollama 實測驗證過可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事，見下面「到公司後怎麼做」。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**Camunda 跟 DataHub 現在都可以完整本機自架**（`docker-compose.yml` 的 `camunda` service + `scripts/setup-datahub.sh`），整個「建立票單 -> Camunda 啟動流程 -> 簽核 -> Camunda 任務完成」的迴圈已經拿真實跑起來的 app 驗證過，不只是 curl 測試——細節見 `HANDOFF.md`「Camunda + DataHub: local hosting and the external-service switch」。
+**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **88** 個 pytest、前端 29 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 的 OpenAI-compatible 假設已經拿本機 Ollama 實測驗證過可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事，見下面「到公司後怎麼做」。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**Camunda 跟 DataHub 現在都可以完整本機自架**（`docker-compose.yml` 的 `camunda` service + `scripts/setup-datahub.sh`），整個「建立票單 -> Camunda 啟動流程 -> 簽核 -> Camunda 任務完成」的迴圈已經拿真實跑起來的 app 驗證過，不只是 curl 測試——細節見 `HANDOFF.md`「Camunda + DataHub: local hosting and the external-service switch」。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。**2026-08-04 確認 `ghcr.io` 公司防火牆連得到**——不只 backend/frontend，`camunda`、`postgres` 兩個 image 現在也是走這條路 mirror 過去的（公司內部的 Harbor/Nexus 沒有 Camunda image），細節見下面「Getting an image onto the air-gapped network」跟 `HANDOFF.md`「Getting Camunda + Postgres into the office network」。
 
-**架構：** 三個 container 用 `docker-compose` 跑——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 再讀寫 `postgres`（:5432），並對外打三個內網服務：LLM gateway、Camunda 的 REST API（本機開發時也是 `docker-compose` 裡的一個 service，:8082）、DataHub 的 GraphQL API（本機開發時是獨立的 `datahub docker quickstart` stack，:8080）——任何一個打不通都有 fallback，不會直接掛掉。完整圖見下面「Architecture」章節。
+**架構：** 四個 container 用 `docker-compose` 跑——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 再讀寫 `postgres`（:5432，本機自架），也打 `camunda`（本機自架的 REST API，:8082），並對外打兩個內網服務：LLM gateway、DataHub 的 GraphQL API（本機開發時是獨立的 `datahub docker quickstart` stack，:8080）——任何一個打不通都有 fallback，不會直接掛掉。完整圖見下面「Architecture」章節。
 
-**程式碼在哪裡：** 後端邏輯全在 `backend/app/`——`main.py` 是所有 HTTP 路由和票單/簽核狀態機，`chat.py` 是聊天助理（打招呼快速回覆、zero-hallucination 提示詞、LLM 打不通時的本地關鍵字 fallback），`config.py` 集中管理所有環境變數，`db.py` 是資料庫 model，`integrations/` 底下三個檔案分別對應 LLM/Camunda/DataHub 三個外部串接。前端在 `frontend/src/`——`App.jsx` 管全域狀態，`api.js` 是所有後端呼叫（含手刻的 SSE 串流解析），`i18n.js` 管中英文字串，`components/` 底下一個檔案一個 UI 元件。完整逐檔案說明見下面「Code map」章節。
+**程式碼在哪裡：** 後端邏輯全在 `backend/app/`——`main.py` 是所有 HTTP 路由、票單/簽核狀態機、`X-API-Key` 驗證，`chat.py` 是聊天助理（打招呼快速回覆、zero-hallucination 提示詞、LLM 打不通時的本地關鍵字 fallback、`keyword_search()` 一般搜尋模式），`config.py` 集中管理所有環境變數，`db.py` 是資料庫 model，`integrations/` 底下三個檔案分別對應 LLM/Camunda/DataHub 三個外部串接。前端在 `frontend/src/`——`App.jsx` 管全域狀態，`api.js` 是所有後端呼叫（含手刻的 SSE 串流解析），`i18n.js` 管中英文字串，`components/` 底下一個檔案一個 UI 元件。完整逐檔案說明見下面「Code map」章節。
 
-**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗）——裡面預設值是假的 LLM/Camunda/DataHub 端點，先用預設值就能跑起來看 fallback 行為，之後知道真實內網端點再回來改。接著本機（家裡）直接 `docker compose up --build` 就能跑。公司內網因為連不到 PyPI/npm，第一步應該先直接在公司試同一條指令——如果內網本身有設定 registry mirror 可能就直接通了；如果 `pip install`/`npm ci` 卡住，才需要退回「家裡先 build 好 image，想辦法弄進公司內網」這條路——內部 registry，或是已經 build+push 好、設成 public 的 GHCR image（`docker compose pull` 不用登入就能拉，只差公司防火牆連不連得到 `ghcr.io` 這個網域還沒實測）。完整決策流程、指令、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
+**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗）——裡面預設值是假的 LLM/DataHub 端點，先用預設值就能跑起來看 fallback 行為（Camunda 預設就是本機真的跑起來，不是 fallback），之後知道真實內網端點再回來改。接著本機（家裡）直接 `docker compose up --build` 就能跑。公司內網因為連不到 PyPI/npm，第一步應該先直接在公司試同一條指令——如果內網本身有設定 registry mirror 可能就直接通了；如果 `pip install`/`npm ci` 卡住，才需要退回「家裡先 build 好 image，想辦法弄進公司內網」這條路，用已經 build/mirror 好、設成 public 的 GHCR image（`docker compose pull` 不用登入就能拉，`ghcr.io` 公司防火牆已確認連得到）——`backend`/`frontend` 是這個 repo 自己 build 的，`camunda`/`postgres` 是從 Docker Hub mirror 過去的（因為公司的 Harbor 沒有 Camunda image）。完整決策流程、指令、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
 
 ## 到公司後怎麼做（照順序，一步一步）
 
@@ -43,22 +43,22 @@ Camunda), and what business logic / UI direction to carry over.
 ```bash
 cp backend/.env.example backend/.env
 ```
-先不改內容也能跑（會用假的 LLM/Camunda/DataHub 端點，你會看到 fallback 行為，例如搜尋會退回本地關鍵字比對）——這是正常的，不是壞掉，Step 5 再回來接公司真實的 LLM。
+先不改內容也能跑（會用假的 LLM/DataHub 端點，你會看到 fallback 行為，例如搜尋會退回本地關鍵字比對；Camunda 不算在這裡面，它預設就是本機真的跑起來，不是 fallback）——這是正常的，不是壞掉，Step 5 再回來接公司真實的 LLM。
 
 **Step 2 — 第一次嘗試：直接在公司 build**
 ```bash
 docker compose up --build
 ```
-這行同時測試三件事：base image（`python:3.11-slim`/`node:20-alpine` 等）拉不拉得到、`pip install` 走不走得到 PyPI mirror、`npm ci` 走不走得到 npm mirror。**如果這行成功，直接跳到 Step 4**，不用管 Step 3。
+`camunda`、`postgres` 這兩個 image 現在已經是從 `ghcr.io` 拉（2026-08-04 確認公司防火牆連得到，不再依賴公司的 Harbor/Nexus，那邊本來就沒有 Camunda image），所以這行真正還不確定的，只剩 `backend`/`frontend` 自己 build 的部分：base image（`python:3.11-slim`/`node:20-alpine` 等）拉不拉得到、`pip install` 走不走得到 PyPI mirror、`npm ci` 走不走得到 npm mirror。**如果這行成功，直接跳到 Step 4**，不用管 Step 3。
 
-**Step 3 — 如果 Step 2 失敗（`pip install`/`npm ci` 卡住）：改拉已經 build 好的 image**
+**Step 3 — 如果 Step 2 失敗（`pip install`/`npm ci` 卡住）：全部改拉已經 build/mirror 好的 image**
 ```bash
 docker compose pull
 docker compose up -d
 ```
-`backend`/`frontend` 這兩個 image 已經 build 好、push 到 `ghcr.io` 並設成 public（2026-07-28 已驗證，不用登入就能拉）——**這步真正在測的是公司防火牆連不連得到 `ghcr.io` 這個網域**（`github.com` 已知連得到，但 `ghcr.io` 是不同網域，沒實測過）。`postgres` 那個 image 走 Docker Hub，理論上公司內部的 Docker image mirror 會處理（HANDOFF.md 有記錄這個 mirror 存在），如果連這行都失敗，代表這個假設也要重新確認。
+四個 image（`backend`/`frontend` 是這個 repo 自己 build 的，`camunda`/`postgres` 是從 Docker Hub mirror 過去的）都已經 push 到 `ghcr.io` 並設成 public，不用登入就能拉，公司防火牆連不連得到 `ghcr.io` 這件事本身已經確認過沒問題（2026-08-04）。這步理論上應該會成功——如果還是失敗，代表公司網路狀況跟上次測的時候不一樣了，值得先確認這點，而不是照舊假設。
 
-如果 Step 3 也失敗：先不要繼續往下試，跳到最下面「有問題怎麼辦」那段，把診斷結果帶回來，我們再一起想下一步（可能是內部 registry、或者我在家 `docker save`/`docker load` 傳檔案過去）。
+如果 Step 3 也失敗：先不要繼續往下試，跳到最下面「有問題怎麼辦」那段，把診斷結果帶回來，我們再一起想下一步。
 
 **Step 4 — 確認真的跑起來了**
 ```bash
@@ -139,6 +139,25 @@ pytest backend/evals/ -v -s
   reply quality/precision against any OpenAI-compatible judge model,
   local or the company's real gateway — see "Evals" in
   `backend/README.md`.
+- **Security review (2026-07-30)**: found and fixed zero authentication
+  on the API (every `/api/*` route now supports `X-API-Key`, off by
+  default) and 3 real frontend XSS sites (`dangerouslySetInnerHTML` on
+  LLM/user-controlled text, now plain text). Interim measures, not a
+  full fix — see HANDOFF.md "Security review" for what's still open
+  (notably `submit_approval()`'s owner-impersonation gap, which needs
+  real SSO/OIDC).
+- **Discover search has a general/AI mode toggle** (2026-07-31, defaults
+  to general/keyword search — plain `ILIKE` match against the catalog,
+  no LLM call). Greeting detection (`is_greeting()`) is keyword-only —
+  an LLM-based fallback was tried and reverted after live testing showed
+  it unreliable on a small local model; unmatched queries are logged
+  instead for offline, human-reviewed triage
+  (`backend/scripts/review_unmatched_queries.py`) — see HANDOFF.md.
+- **`camunda`/`postgres` now mirror from GHCR** (2026-08-04), same as
+  `backend`/`frontend` — confirmed the office network can reach
+  `ghcr.io` even though it can't reach Docker Hub or the company's own
+  Harbor/Nexus (neither has a Camunda image). See "Getting an image onto
+  the air-gapped network" below.
 
 ## Architecture
 
@@ -233,15 +252,16 @@ flowchart LR
 The open question is *how the backend/frontend images get built* when
 the company network can reach GitHub but not PyPI/npm/Docker Hub
 directly (see `HANDOFF.md` "Why this repo exists" for the full
-constraint). Try these **in order** — each one only matters if the
+constraint). `camunda`/`postgres` are a solved problem now (both mirror
+from GHCR, confirmed reachable from the office - see below); the open
+part is specifically whether `backend`/`frontend` can `pip install`/
+`npm ci` on-site. Try these **in order** — each one only matters if the
 previous one fails:
 
 ```mermaid
 flowchart TD
-    A["office: git pull\ndocker compose up --build"] -->|works| Z["done - internal PyPI/npm\n+ image mirrors cover it"]
-    A -->|"pip install / npm ci fails\n(no PyPI/npm mirror)"| B{"which pre-built\nimage path?"}
-    B -->|"internal registry reachable"| C["home: docker compose build\ndocker save | ssh/copy to office\ndocker load, then docker compose up"]
-    B -->|"ghcr.io reachable from office?"| D["done: home already built+pushed to ghcr.io (public)\noffice: docker compose pull && up"]
+    A["office: git pull\ndocker compose up --build"] -->|works| Z["done - internal PyPI/npm\nmirror covers backend/frontend too"]
+    A -->|"pip install / npm ci fails\n(no PyPI/npm mirror)"| B["office: docker compose pull && up\n(all 4 images from ghcr.io, confirmed reachable)"]
 ```
 
 **Step 1 — just try it at the office first, before anything else:**
@@ -249,13 +269,16 @@ flowchart TD
 git pull
 docker compose up --build
 ```
-This single command tests three things at once: whether the Docker
-daemon's registry mirror covers the base images (`python:3.11-slim`,
-`node:20-alpine`, `nginx:alpine` — many corporate Docker setups
-configure a transparent `registry-mirrors` entry in `daemon.json` for
-this, no Dockerfile change needed), whether `pip install` reaches an
-internal PyPI mirror, and whether `npm ci` reaches an internal npm
-mirror. If this works, nothing else in this section is needed.
+`camunda`/`postgres` will pull from `ghcr.io` regardless (already
+confirmed working from the office - see below), so this command really
+only tests whether `backend`/`frontend` can build on-site: whether the
+Docker daemon's registry mirror covers the base images
+(`python:3.11-slim`, `node:20-alpine`, `nginx:alpine` — many corporate
+Docker setups configure a transparent `registry-mirrors` entry in
+`daemon.json` for this, no Dockerfile change needed), whether `pip
+install` reaches an internal PyPI mirror, and whether `npm ci` reaches
+an internal npm mirror. If this works, nothing else in this section is
+needed.
 
 **Step 2 — if `pip`/`npm` can't reach a mirror,** the image has to be
 built somewhere with internet access (i.e. at home) and gotten onto the
@@ -296,12 +319,13 @@ Where things live and what each piece is for — HANDOFF.md has the *why*
 just the *where*.
 
 **Backend** (`backend/app/`):
-- `main.py` — FastAPI app, every HTTP route: `/health`, `/api/catalog`,
-  `/api/catalog/{id}/connection`, `/api/chat` (SSE), `/api/tickets`
-  (create/list), `/api/tickets/{id}/approvals` (approve/reject). Owns the
-  ticket/approval state machine — status derivation and cycle-time
-  calculation live right in the route handlers, no separate service
-  layer.
+- `main.py` — FastAPI app, every HTTP route: `/health` (unauthenticated),
+  `/api/catalog`, `/api/catalog/{id}/connection`, `/api/chat` (SSE),
+  `/api/tickets` (create/list), `/api/tickets/{id}/approvals`
+  (approve/reject) — all `/api/*` routes require `X-API-Key` when
+  `API_KEY` is set (`require_api_key`). Owns the ticket/approval state
+  machine — status derivation and cycle-time calculation live right in
+  the route handlers, no separate service layer.
 - `chat.py` — the chat/search assistant: greeting fast-path
   (`is_greeting`), the zero-hallucination prompt (`build_prompt`), the
   local keyword fallback (`local_rule_match`) used only when the LLM is
@@ -340,7 +364,7 @@ just the *where*.
   row outside the declared semantic model (`../wren/project/`) - this is
   what `chat.py`'s `resolve_via_semantic_layer()` uses for
   zero-hallucination data-subject matching.
-- `tests/` — the pytest suite (63 tests), one file per module above.
+- `tests/` — the pytest suite (88 tests), one file per module above.
 
 **Frontend** (`frontend/src/`):
 - `App.jsx` — top-level state (lang, theme, current view, cart, tickets)
@@ -422,6 +446,8 @@ wren/project/                WrenAI semantic model (MDL) - see app/integrations/
 camunda/data-gov-approval.bpmn  BPMN process this app deploys to Camunda itself on startup
 datahub/seed_catalog.py     seeds sample dataset entities into a local DataHub instance
 scripts/setup-datahub.sh    stands up + seeds a local DataHub instance (own docker quickstart stack)
+scripts/mirror-image-to-ghcr.sh  retags + pushes a public third-party image (Camunda, Postgres) to this repo's GHCR namespace
+backend/scripts/review_unmatched_queries.py  offline, human-reviewed triage of chat queries that matched nothing
 k8s/                        placeholder for future Kubernetes manifests (not needed yet — Docker is fine for now)
 scripts/collect-debug-log.sh  one-command diagnostics collector, see TESTING_LOG.md
 debug-logs/                 output of the script above, committed for review from home

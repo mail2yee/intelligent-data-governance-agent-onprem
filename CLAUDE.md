@@ -30,7 +30,22 @@ things left off.
   Camunda-task-completes loop is verified end-to-end through the actual
   app. See HANDOFF.md "Camunda + DataHub: local hosting and the
   external-service switch" before touching either integration.
-- Backend: `ruff` + `mypy` clean, 63 pytest tests (`backend/tests/`) plus
+- Every `/api/*` route requires `X-API-Key` when `API_KEY` is set (empty
+  = disabled, the default) - an interim, coarse auth gate added
+  2026-07-30 after a security review found none. Does **not** fix
+  `submit_approval()`'s separate owner-impersonation gap (needs real
+  SSO/OIDC). Frontend also had 3 real XSS sites (raw LLM/user text via
+  `dangerouslySetInnerHTML`) fixed the same session - see HANDOFF.md's
+  "Security review" section before touching auth or chat rendering.
+- Discover search has a general/AI mode toggle (defaults to general -
+  plain keyword `ILIKE` match, no LLM call) - see HANDOFF.md's "General
+  search / AI search toggle" section.
+- `chat.py`'s greeting detection is keyword-only (`is_greeting()`) - an
+  LLM-based fallback classification was tried and reverted (unreliable
+  on a small local model, see HANDOFF.md's "Greeting detection fix"
+  section) in favor of offline, human-reviewed query mining
+  (`backend/scripts/review_unmatched_queries.py`).
+- Backend: `ruff` + `mypy` clean, 88 pytest tests (`backend/tests/`) plus
   a separate DeepEval-based LLM-judge eval suite (`backend/evals/`, not
   part of a bare `pytest` run - see `backend/README.md`'s "Evals"
   section). Frontend: `oxlint` clean, 29 vitest tests. All pass.
@@ -39,10 +54,19 @@ things left off.
   actual on-prem gateway** - pointing both the app (`backend/.env`) and
   the eval judge (`DGO_EVAL_JUDGE_*`) at the real gateway is the current
   top of the "not done yet" list, see HANDOFF.md.
-- GHCR (`ghcr.io/mail2yee/...`) images are built, pushed, public, and
-  confirmed pullable anonymously - a fallback path if the company
-  network can't `pip install`/`npm ci` directly. Whether the office
-  firewall reaches `ghcr.io` itself is still unconfirmed.
+- **GHCR (`ghcr.io/mail2yee/...`) confirmed reachable from the office**
+  (2026-08-04) - not just a fallback path anymore, this is now the
+  actual mechanism for getting `backend`/`frontend` (built by this repo)
+  *and* `camunda`/`postgres` (mirrored from Docker Hub via
+  `scripts/mirror-image-to-ghcr.sh`, since the company's internal
+  registries don't have everything - no Camunda image there) onto the
+  air-gapped network. All four images are public, pulled anonymously,
+  confirmed `amd64/linux` (matching the company's servers, not this dev
+  machine's arm64 - a real platform-mismatch bug hit and fixed twice
+  now, see HANDOFF.md). Self-hosting Postgres this way is a
+  dev-environment choice, not a production plan - revisit before any
+  shared/production deployment, see HANDOFF.md's "Getting Camunda +
+  Postgres into the office network" section.
 - CI: intentionally NOT GitHub Actions — company uses internal Azure
   DevOps for CI/CD. Don't build `.github/workflows/`.
 - Workflow: user develops with Claude Code at home, pulls via git (or a
