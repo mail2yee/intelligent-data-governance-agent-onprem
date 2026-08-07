@@ -1,35 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Brings up a local DataHub instance and seeds it with sample dataset
-# entities matching backend/app/integrations/datahub_client.py's expected
-# shape (see datahub/seed_catalog.py). Run once before `docker compose up`
-# if you want the app talking to a real DataHub instead of its built-in
-# mock catalog fallback.
+# Seeds sample dataset entities matching
+# backend/app/integrations/datahub_client.py's expected shape (see
+# datahub/seed_catalog.py) into this repo's own self-hosted DataHub
+# instance (datahub/docker-compose.datahub.yml, brought up via
+# ./deploy.sh or `docker compose -f docker-compose.yml -f
+# datahub/docker-compose.datahub.yml up -d`).
 #
-# DataHub runs as its own independent `datahub docker quickstart` stack
-# (not a service in this repo's docker-compose.yml) - confirmed 2026-07-30
-# this mirrors the sibling agent_mem0_poc repo's approach, and matters in
-# practice: this dev machine already had a DataHub instance from that other
-# project, and reusing it here (rather than each repo running its own)
-# avoids two DataHub stacks fighting over the same GMS port.
+# Run this AFTER that instance is up and healthy - it does not start
+# anything itself. Re-run any time to re-seed (safe - DataHub upserts by
+# URN).
 #
-# GMS listens on host port 8080 by default (the `datahub` CLI's own
-# default, unconfigurable without a custom compose file override) - this
-# repo's frontend deliberately uses 8090 instead, to leave 8080 free (see
-# docker-compose.yml's comments).
+# Historical note: this used to launch its own separate `datahub docker
+# quickstart` stack, shared with the sibling agent_mem0_poc repo (see
+# git history / HANDOFF.md) - reversed 2026-08-05 when DataHub moved
+# into this repo's own docker-compose stack instead. GMS is now at
+# :18080, not the old shared instance's :8080.
 
-if ! command -v datahub >/dev/null 2>&1; then
-  echo "找不到 datahub CLI，安裝中: pip install 'acryl-datahub[datahub-rest]'"
-  pip install --quiet 'acryl-datahub[datahub-rest]'
-fi
-
-if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
-  echo "DataHub GMS already running on :8080, skipping docker quickstart."
-else
-  datahub docker quickstart
-  echo "Waiting for DataHub GMS..."
-  until curl -sf http://localhost:8080/health >/dev/null 2>&1; do sleep 3; done
+if ! curl -sf http://localhost:18080/health >/dev/null 2>&1; then
+  echo "DataHub GMS not reachable at http://localhost:18080 - bring it up first:" >&2
+  echo "  ./deploy.sh" >&2
+  echo "  (or: docker compose -f docker-compose.yml -f datahub/docker-compose.datahub.yml up -d)" >&2
+  exit 1
 fi
 
 echo "Seeding sample dataset catalog..."
@@ -37,12 +30,10 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/../datahub/seed_catalog.py"
 
 cat <<'EOF'
 
-Done. DataHub GMS: http://localhost:8080 (GraphQL: /api/graphql)
-DataHub UI:        http://localhost:9002 (username/password: datahub/datahub)
+Done. DataHub GMS: http://localhost:18080 (GraphQL: /api/graphql)
+DataHub UI:        http://localhost:19002 (username/password: datahub/datahub)
 
-The backend picks this up automatically:
-  - via docker-compose.yml (DATAHUB_API_URL=http://host.docker.internal:8080)
-  - or locally, set DATAHUB_API_URL=http://localhost:8080 in backend/.env
-
-Re-run this script any time to re-seed (safe - DataHub upserts by URN).
+The backend picks this up automatically once the datahub overlay is
+included (see docker-compose.yml/deploy.sh) - no manual DATAHUB_API_URL
+change needed for the containerized backend.
 EOF

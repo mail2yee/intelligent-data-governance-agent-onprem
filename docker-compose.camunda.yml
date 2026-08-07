@@ -1,0 +1,49 @@
+# Optional overlay: self-hosted Camunda 7.22, included alongside the
+# root docker-compose.yml only when its image is actually pullable - see
+# deploy.sh. Split out from docker-compose.yml (2026-08-05) so the core
+# stack (postgres/backend/frontend) can still come up without Camunda,
+# falling back to whatever CAMUNDA_BASE_URL is already set in
+# backend/.env (presumably the company's real instance) instead of
+# hard-failing on a missing dependency. See HANDOFF.md's "Self-hosted
+# images with a config fallback" section.
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.camunda.yml up -d
+#
+# backend/app/integrations/camunda_client.py. Confirmed 2026-07-29 the
+# company's real instance is Camunda **7.22** (a correction from an
+# earlier, wrong Camunda 8/Zeebe assumption) - this runs the same
+# official image locally so the whole ticket -> approve -> Camunda
+# task-completion loop can be tested end-to-end without the company
+# network. Mapped to host port 8082 - 8081 is taken by an unrelated
+# project on this dev machine, and 8080 is free again now that DataHub
+# also moved into this repo's own compose stack (datahub/) on different
+# ports.
+#
+# Mirrored to GHCR (2026-08-04) - the company's internal registries
+# (Harbor, Nexus) don't have a Camunda image, but ghcr.io itself is
+# reachable from the office - see scripts/mirror-image-to-ghcr.sh. Unlike
+# Postgres, there's no company-provided Camunda service to prefer instead
+# when the image *is* available - self-hosting this one is the actual
+# long-term plan, not just a dev convenience; the config fallback here is
+# purely for when the image can't be pulled at all.
+services:
+  camunda:
+    image: ghcr.io/mail2yee/camunda-bpm-platform:7.22.0
+    platform: linux/amd64
+    ports:
+      - "8082:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/engine-rest/engine"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    environment:
+      # Only takes effect when this overlay is included - see
+      # docker-compose.yml's comment on why there's no such override
+      # there by default.
+      CAMUNDA_BASE_URL: http://camunda:8080/engine-rest
+    depends_on:
+      camunda:
+        condition: service_healthy

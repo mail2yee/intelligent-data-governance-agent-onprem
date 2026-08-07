@@ -1,0 +1,353 @@
+# DataHub, self-hosted as part of this repo's own docker-compose stack -
+# reversed 2026-08-05 from the earlier design (a separate, host-level
+# `datahub docker quickstart` shared with the sibling agent_mem0_poc
+# repo, see git history) at the user's explicit request to have
+# DataHub/Camunda/Postgres all be "images this repo owns", consistently
+# falling back to the company's real external service via config
+# (DATAHUB_API_URL) when the self-hosted image isn't available - see
+# deploy.sh and HANDOFF.md's "Self-hosted images with a config fallback"
+# section.
+#
+# Adapted from DataHub's own official quickstart compose file (fetched
+# via `datahub docker quickstart`, pinned to v1.5.0.6 - the same version
+# already hands-on verified working earlier in this project) - NOT
+# hand-written from scratch, so it should behave the same way. Changes
+# from the upstream file:
+#   - `profiles:` stripped from every service - upstream gates most
+#     services behind a `quickstart` profile that `datahub docker
+#     quickstart` activates automatically; we want `docker compose up`
+#     alone (no --profile flag to remember) to always bring these up.
+#   - Host-published ports shifted (18080/19002/19092/13306/19200
+#     instead of 8080/9002/9092/3306/9200) so this can coexist with the
+#     old shared host-level DataHub instance if that's still running
+#     during the transition, and so 8080 stays free for nothing in
+#     particular (no other service needs it in this repo).
+#   - `image:` fields point at this repo's GHCR mirror
+#     (ghcr.io/mail2yee/...) instead of Docker Hub / acryldata /
+#     confluentinc directly - see scripts/mirror-image-to-ghcr.sh and
+#     HANDOFF.md for why (the office network can't reach those
+#     registries directly, but ghcr.io is confirmed reachable).
+#   - DATAHUB_TOKEN_SERVICE_SALT/SIGNING_KEY and DATAHUB_VERSION get
+#     inline defaults (via `${VAR:-default}`) instead of requiring a
+#     separate secrets file - these aren't meaningful secrets for a
+#     local/PoC instance (nothing in this app's own data is protected by
+#     them), just fixed values so this file works standalone.
+#
+# Include this file alongside the root docker-compose.yml:
+#   docker compose -f docker-compose.yml -f datahub/docker-compose.datahub.yml up -d
+# (deploy.sh does this automatically when the images are pullable.)
+services:
+  datahub-gms-quickstart:
+    depends_on:
+      system-update-quickstart:
+        condition: service_completed_successfully
+        required: true
+    environment:
+      ALTERNATE_MCP_VALIDATION: 'true'
+      CONFIG_ENTITY_REGISTRY_USE_OPTIMIZED_LOADING: 'true'
+      DATAHUB_BASE_PATH: /
+      DATAHUB_GMS_BASE_PATH: /
+      DATAHUB_SERVER_TYPE: quickstart
+      DATAHUB_TELEMETRY_ENABLED: 'false'
+      DATAHUB_TOKEN_SERVICE_SALT: ${DATAHUB_TOKEN_SERVICE_SALT:-DtFuVe+U7P8VgbGKCG5ZUFBWv3J5iMydW8WJjKGrkqo=}
+      DATAHUB_TOKEN_SERVICE_SIGNING_KEY: ${DATAHUB_TOKEN_SERVICE_SIGNING_KEY:-jEuGYDOUJy/4urNQhUGQC3NOqoU8HhwGeDf4OfLcIBk=}
+      DATAHUB_UPGRADE_HISTORY_KAFKA_CONSUMER_GROUP_ID: generic-duhe-consumer-job-client-gms
+      EBEAN_DATASOURCE_DRIVER: com.mysql.jdbc.Driver
+      EBEAN_DATASOURCE_HOST: mysql:3306
+      EBEAN_DATASOURCE_PASSWORD: datahub
+      EBEAN_DATASOURCE_URL: jdbc:mysql://mysql:3306/datahub?verifyServerCertificate=false&useSSL=true&useUnicode=yes&characterEncoding=UTF-8&enabledTLSProtocols=TLSv1.2
+      EBEAN_DATASOURCE_USERNAME: root
+      ELASTICSEARCH_HOST: search
+      ELASTICSEARCH_IMPLEMENTATION: opensearch
+      ELASTICSEARCH_INDEX_BUILDER_MAPPINGS_REINDEX: 'true'
+      ELASTICSEARCH_INDEX_BUILDER_SETTINGS_REINDEX: 'true'
+      ELASTICSEARCH_LIMIT_RESULTS_STRICT: 'true'
+      ELASTICSEARCH_PORT: '9200'
+      ELASTICSEARCH_PROTOCOL: http
+      ELASTICSEARCH_USE_SSL: 'false'
+      ENTITY_REGISTRY_CONFIG_PATH: /datahub/datahub-gms/resources/entity-registry.yml
+      ENTITY_SERVICE_ENABLE_RETENTION: 'true'
+      ENTITY_VERSIONING_ENABLED: 'true'
+      ES_BULK_REFRESH_POLICY: WAIT_UNTIL
+      EXTRACT_JAR_ENABLED: 'true'
+      GRAPH_SERVICE_DIFF_MODE_ENABLED: 'true'
+      GRAPH_SERVICE_IMPL: elasticsearch
+      JAVA_OPTS: -Xms1g -Xmx1g
+      KAFKA_BOOTSTRAP_SERVER: broker:29092
+      KAFKA_SCHEMAREGISTRY_URL: http://datahub-gms:8080/schema-registry/api/
+      MAE_CONSUMER_ENABLED: 'true'
+      MCE_CONSUMER_ENABLED: 'true'
+      METADATA_SERVICE_AUTH_ENABLED: 'false'
+      PE_CONSUMER_ENABLED: 'true'
+      POLICY_CACHE_REFRESH_INTERVAL_SECONDS: '120'
+      SCHEMA_REGISTRY_TYPE: INTERNAL
+      STRICT_URN_VALIDATION_ENABLED: 'true'
+      UI_INGESTION_ENABLED: 'true'
+      UI_INGESTION_DEFAULT_CLI_VERSION: ${UI_INGESTION_DEFAULT_CLI_VERSION:-1.6.0.10}
+    hostname: datahub-gms
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS --fail http://datahub-gms:8080/health"]
+      timeout: 5s
+      interval: 5s
+      retries: 20
+      start_period: 1m30s
+    image: ghcr.io/mail2yee/datahub-gms:${DATAHUB_VERSION:-v1.5.0.6}
+    platform: linux/amd64
+    ports:
+      - "18080:8080"
+    volumes:
+      - type: bind
+        source: ${HOME}/.datahub/plugins
+        target: /etc/datahub/plugins
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${HOME}/.datahub/search
+        target: /etc/datahub/search
+        bind:
+          create_host_path: true
+
+  frontend-quickstart:
+    depends_on:
+      system-update-quickstart:
+        condition: service_completed_successfully
+        required: true
+    environment:
+      DATAHUB_APP_VERSION: ${DATAHUB_VERSION:-v1.5.0.6}
+      DATAHUB_BASE_PATH: /
+      DATAHUB_GMS_BASE_PATH: /
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: '8080'
+      DATAHUB_PLAY_MEM_BUFFER_SIZE: 10MB
+      DATAHUB_SECRET: YouKnowNothing
+      DATAHUB_TRACKING_TOPIC: DataHubUsageEvent_v1
+      ELASTIC_CLIENT_HOST: elasticsearch
+      ELASTIC_CLIENT_PORT: '9200'
+      JAVA_OPTS: -Xms512m -Xmx512m -Dhttp.port=9002 -Dconfig.file=datahub-frontend/conf/application.conf -Djava.security.auth.login.config=datahub-frontend/conf/jaas.conf
+        -Dlogback.configurationFile=datahub-frontend/conf/logback.xml -Dlogback.debug=false -Dpidfile.path=/dev/null
+      KAFKA_BOOTSTRAP_SERVER: broker:29092
+      PLAY_HTTP_CONTEXT: /
+    hostname: datahub-frontend-react
+    image: ghcr.io/mail2yee/datahub-frontend-react:${DATAHUB_VERSION:-v1.5.0.6}
+    platform: linux/amd64
+    ports:
+      - "19002:9002"
+    volumes:
+      - type: bind
+        source: ${HOME}/.datahub/plugins
+        target: /etc/datahub/plugins
+        bind:
+          create_host_path: true
+
+  kafka-broker:
+    command:
+      - /bin/bash
+      - -c
+      - |
+        file_path="/var/lib/kafka/data/clusterID"
+        if [ ! -f "$$file_path" ]; then
+           /bin/kafka-storage random-uuid > $$file_path
+           kafka-storage format --ignore-formatted -t $$(cat "$$file_path") -c /etc/kafka/kafka.properties
+        fi
+        export CLUSTER_ID=$$(cat "$$file_path")
+        /etc/confluent/docker/run
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: BROKER://broker:29092,EXTERNAL://localhost:9092
+      KAFKA_BROKER_ID: '1'
+      KAFKA_CONFLUENT_SUPPORT_METRICS_ENABLE: 'false'
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker:39092
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: '0'
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+      KAFKA_INTER_BROKER_LISTENER_NAME: BROKER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,BROKER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: BROKER://broker:29092,EXTERNAL://broker:9092,CONTROLLER://broker:39092
+      KAFKA_LOG4J_LOGGERS: org.apache.kafka.image.loader.MetadataLoader=WARN
+      KAFKA_MAX_MESSAGE_BYTES: '5242880'
+      KAFKA_MESSAGE_MAX_BYTES: '5242880'
+      KAFKA_NODE_ID: '1'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: '1'
+      KAFKA_PROCESS_ROLES: controller, broker
+    hostname: broker
+    # kafka-broker-api-versions, not `nc -z` - the 8.3.0 base image dropped
+    # netcat, confirmed by testing (healthcheck always failed despite the
+    # broker actually being up).
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server broker:29092"]
+      timeout: 5s
+      interval: 5s
+      retries: 20
+      start_period: 1m0s
+    image: ghcr.io/mail2yee/cp-kafka:8.3.0
+    platform: linux/amd64
+    ports:
+      - "19092:9092"
+    volumes:
+      - type: volume
+        source: broker
+        target: /var/lib/kafka/data
+
+  mysql:
+    # No --default-authentication-plugin flag - that option was removed in
+    # MySQL 8.4+ (server refuses to start with "unknown variable",
+    # confirmed by testing); caching_sha2_password has been the default
+    # since 8.0 anyway, so dropping it changes nothing.
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+    environment:
+      MYSQL_DATABASE: datahub
+      MYSQL_PASSWORD: datahub
+      MYSQL_ROOT_HOST: '%'
+      MYSQL_ROOT_PASSWORD: datahub
+      MYSQL_USER: datahub
+    hostname: mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h mysql -u $$MYSQL_USER --password=$$MYSQL_PASSWORD"]
+      timeout: 10s
+      interval: 5s
+      retries: 10
+      start_period: 20s
+    image: ghcr.io/mail2yee/mysql:8.4.9
+    platform: linux/amd64
+    ports:
+      - "13306:3306"
+    restart: on-failure
+    volumes:
+      - type: volume
+        source: mysqldata
+        target: /var/lib/mysql
+
+  opensearch:
+    environment:
+      DISABLE_SECURITY_PLUGIN: 'true'
+      ES_JAVA_OPTS: -Xms256m -Xmx512m -Dlog4j2.formatMsgNoLookups=true
+      OPENSEARCH_JAVA_OPTS: -Xms768m -Xmx1024m -Dlog4j2.formatMsgNoLookups=true
+      discovery.type: single-node
+    hostname: search
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS --fail 'http://search:9200/_cluster/health?wait_for_status=yellow&timeout=0s'"]
+      timeout: 15s
+      interval: 5s
+      retries: 20
+      start_period: 1m0s
+    # Pinned to the 2.19.x line on purpose - DataHub v1.5.0.6's GMS
+    # actively refuses to start against OpenSearch 3.x (confirmed by
+    # testing: "Unable to detect search engine type... expected 2.x").
+    # 2.19.6 is the latest available patch within 2.19.x.
+    image: ghcr.io/mail2yee/opensearch:2.19.6
+    platform: linux/amd64
+    ports:
+      - "19200:9200"
+    volumes:
+      - type: volume
+        source: osdata
+        target: /usr/share/opensearch/data
+
+  system-update-quickstart:
+    command:
+      - -u
+      - SystemUpdate
+    depends_on:
+      kafka-broker:
+        condition: service_healthy
+        required: true
+      mysql:
+        condition: service_healthy
+        required: true
+      opensearch:
+        condition: service_healthy
+        required: true
+    environment:
+      BACKFILL_BROWSE_PATHS_V2: 'true'
+      CREATE_USER: 'false'
+      CREATE_USER_PASSWORD: datahub
+      CREATE_USER_USERNAME: datahub
+      DATAHUB_BASE_PATH: /
+      DATAHUB_GMS_BASE_PATH: /
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: '8080'
+      DATAHUB_PRECREATE_TOPICS: 'true'
+      DATAHUB_SQL_SETUP_ENABLED: 'true'
+      DATAHUB_TOKEN_SERVICE_SALT: ${DATAHUB_TOKEN_SERVICE_SALT:-DtFuVe+U7P8VgbGKCG5ZUFBWv3J5iMydW8WJjKGrkqo=}
+      DATAHUB_TOKEN_SERVICE_SIGNING_KEY: ${DATAHUB_TOKEN_SERVICE_SIGNING_KEY:-jEuGYDOUJy/4urNQhUGQC3NOqoU8HhwGeDf4OfLcIBk=}
+      EBEAN_DATASOURCE_DRIVER: com.mysql.jdbc.Driver
+      EBEAN_DATASOURCE_HOST: mysql:3306
+      EBEAN_DATASOURCE_PASSWORD: datahub
+      EBEAN_DATASOURCE_URL: jdbc:mysql://mysql:3306/datahub?verifyServerCertificate=false&useSSL=true&useUnicode=yes&characterEncoding=UTF-8&enabledTLSProtocols=TLSv1.2
+      EBEAN_DATASOURCE_USERNAME: root
+      ELASTICSEARCH_BUILD_INDICES_CLONE_INDICES: 'false'
+      ELASTICSEARCH_HOST: search
+      ELASTICSEARCH_IMPLEMENTATION: opensearch
+      ELASTICSEARCH_INDEX_BUILDER_MAPPINGS_REINDEX: 'true'
+      ELASTICSEARCH_INDEX_BUILDER_REFRESH_INTERVAL_SECONDS: '3'
+      ELASTICSEARCH_INDEX_BUILDER_SETTINGS_REINDEX: 'true'
+      ELASTICSEARCH_PORT: '9200'
+      ELASTICSEARCH_PROTOCOL: http
+      ELASTICSEARCH_USE_SSL: 'false'
+      ENTITY_REGISTRY_CONFIG_PATH: /datahub/datahub-gms/resources/entity-registry.yml
+      ENTITY_VERSIONING_ENABLED: 'true'
+      GRAPH_SERVICE_IMPL: elasticsearch
+      KAFKA_BOOTSTRAP_SERVER: broker:29092
+      KAFKA_SCHEMAREGISTRY_URL: http://datahub-gms:8080/schema-registry/api/
+      PARTITIONS: '3'
+      REPROCESS_DEFAULT_BROWSE_PATHS_V2: 'false'
+      SCHEMA_REGISTRY_SYSTEM_UPDATE: 'true'
+      SCHEMA_REGISTRY_TYPE: INTERNAL
+      SPRING_KAFKA_PROPERTIES_AUTO_REGISTER_SCHEMAS: 'true'
+      SPRING_KAFKA_PROPERTIES_USE_LATEST_VERSION: 'true'
+      USE_CONFLUENT_SCHEMA_REGISTRY: 'false'
+    hostname: datahub-system-update
+    image: ghcr.io/mail2yee/datahub-upgrade:${DATAHUB_VERSION:-v1.5.0.6}
+    platform: linux/amd64
+    volumes:
+      - type: bind
+        source: ${HOME}/.datahub/plugins
+        target: /etc/datahub/plugins
+        bind:
+          create_host_path: true
+
+  datahub-actions-quickstart:
+    depends_on:
+      datahub-gms-quickstart:
+        condition: service_healthy
+        required: true
+    environment:
+      ACTIONS_CONFIG: ''
+      ACTIONS_EXTRA_PACKAGES: ''
+      DATAHUB_GMS_HOST: datahub-gms
+      DATAHUB_GMS_PORT: '8080'
+      DATAHUB_GMS_PROTOCOL: http
+      DATAHUB_SYSTEM_CLIENT_ID: __datahub_system
+      DATAHUB_SYSTEM_CLIENT_SECRET: JohnSnowKnowsNothing
+      ELASTICSEARCH_HOST: search
+      ELASTICSEARCH_PORT: '9200'
+      ELASTICSEARCH_PROTOCOL: http
+      ELASTICSEARCH_USE_SSL: 'false'
+      KAFKA_BOOTSTRAP_SERVER: broker:29092
+      KAFKA_PROPERTIES_SECURITY_PROTOCOL: PLAINTEXT
+      METADATA_AUDIT_EVENT_NAME: MetadataAuditEvent_v4
+      METADATA_CHANGE_LOG_VERSIONED_TOPIC_NAME: MetadataChangeLog_Versioned_v1
+      SCHEMA_REGISTRY_URL: http://datahub-gms:8080/schema-registry/api/
+    hostname: actions
+    image: ghcr.io/mail2yee/datahub-actions:${DATAHUB_VERSION:-v1.5.0.6}-slim
+    platform: linux/amd64
+
+  # Additive overrides to the root docker-compose.yml's `backend` service -
+  # only take effect when this file is included alongside it (see
+  # deploy.sh). Points the app at this self-hosted GMS instead of
+  # whatever's in backend/.env (presumably the company's real DataHub).
+  backend:
+    environment:
+      DATAHUB_API_URL: http://datahub-gms:8080
+    depends_on:
+      datahub-gms-quickstart:
+        condition: service_healthy
+
+volumes:
+  broker:
+    name: dgo_datahub_broker
+  mysqldata:
+    name: dgo_datahub_mysqldata
+  osdata:
+    name: dgo_datahub_osdata

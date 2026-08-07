@@ -736,6 +736,188 @@ concern in the same way - its durable state lives in whatever database
 it's pointed at, not on local Pod disk, so it doesn't need its own PVC
 the way Postgres does.
 
+## Self-hosted images with a config fallback (2026-08-05)
+
+User-directed architecture change: Camunda, DataHub, and Postgres should
+all be "self-hosted by default via image; if the image can't be pulled,
+fall back to whatever CAMUNDA_BASE_URL/DATAHUB_API_URL is already set to
+in `backend/.env`" (Postgres excepted - no fallback, self-hosting it is
+mandatory, see the section above). `deploy.sh` (new, repo root) is the
+single entry point that implements this decision.
+
+**DataHub moved into this repo's own docker-compose stack**, reversing
+the earlier design (a separate, host-level `datahub docker quickstart`
+shared with the sibling `agent_mem0_poc` repo - see this file's git
+history). The user explicitly chose this over keeping it separate, aware
+of the consequence: DataHub isn't one image, it's **7** -
+`datahub-gms`, `datahub-frontend-react`, `datahub-actions`,
+`datahub-upgrade` (all `acryldata/*:v1.5.0.6`), `mysql:8.2`,
+`opensearchproject/opensearch:2.19.3`, `confluentinc/cp-kafka:8.0.0` -
+all now mirrored to `ghcr.io/mail2yee/...` the same way Camunda/Postgres
+already were. `datahub/docker-compose.datahub.yml` is adapted from
+DataHub's own official quickstart compose file (fetched via `datahub
+docker quickstart`, pinned to v1.5.0.6 - not hand-written), with
+`profiles:` stripped (upstream gates most services behind a `quickstart`
+profile; this repo wants `docker compose up` alone to always bring them
+up) and host ports shifted (18080/19002/19092/13306/19200) to avoid
+clashing with the old shared instance if it's still running during the
+transition. Two consequences worth remembering:
+- This repo no longer shares a DataHub instance with `agent_mem0_poc` -
+  each now runs its own. Running both simultaneously on one dev machine
+  is genuinely heavy (OpenSearch + Kafka + MySQL + GMS, twice over).
+- `datahub/seed_catalog.py` / `scripts/setup-datahub.sh` (the old
+  separate-stack tooling) still work as documented, just now point at
+  this repo's own DataHub instance (`localhost:18080`) rather than the
+  shared one at `localhost:8080`.
+
+**`docker-compose.yml` was split** so Camunda/DataHub can be cleanly
+absent: the `camunda` service and its `backend: depends_on: camunda`
+moved to `docker-compose.camunda.yml`; DataHub's 7 services plus an
+additive `backend` override (`DATAHUB_API_URL`, `depends_on:
+datahub-gms-quickstart`) live in `datahub/docker-compose.datahub.yml`.
+Neither is referenced by the base `docker-compose.yml` at all anymore -
+confirmed via `docker compose config` that omitting both overlay files
+leaves `backend`'s `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` exactly as set in
+`backend/.env` (env_file), with no override fighting it. This is the
+actual mechanism behind "falls back to config" - `deploy.sh` doesn't
+need to know anything about company endpoints, it just decides whether
+to hand Compose an extra `-f` file or not.
+
+**`deploy.sh`** (repo root): copies `.env`/`backend/.env` from the
+`.example` files if missing, then for each of Camunda and DataHub tries
+`docker compose pull` for just that service (or all 7, for DataHub) -
+success includes the overlay file and self-hosts it, failure skips the
+overlay and prints a reminder to point `backend/.env` at the company's
+real instance. Postgres is a hard failure if unpullable, no skip option.
+Brings everything up with one `docker compose -f ... up -d` at the end.
+
+**Two real bugs found building and testing this, neither hypothetical:**
+1. **Pull-before-build silently clobbered fresh local work.** The first
+   `deploy.sh` draft tried `docker compose pull backend frontend` before
+   falling back to `docker compose build` - this is backwards from the
+   already-established office/home workflow (README's Step 2/3 always
+   tries build first). Caught it empirically: after a first full
+   `deploy.sh` run, a test ticket came back with a **Zeebe/Camunda-8 gRPC
+   connection error** - `camunda_client.py` was rewritten for Camunda 7
+   REST weeks ago, so this could only mean the pull had silently
+   overwritten the fresh local backend image with a stale one already
+   sitting on `ghcr.io` from before that rewrite, with no error at all
+   (the pull just succeeds against whatever's already published). Fixed
+   by reversing the order: build first (fails cleanly without PyPI/npm
+   access, e.g. at the office), pull only as the fallback.
+2. **GHCR auth expired silently across a whole batch push.** Mirroring
+   all 7 DataHub images ran as one background job; the completion
+   summary reported success, but reading the actual log showed **every
+   one of the 7 pushes failed with 403 Forbidden** (logged out of
+   `ghcr.io` from earlier anonymous-pull testing, never logged back in
+   before starting this batch). The pulls all succeeded first (each
+   verified `amd64/linux`), so nothing was lost - re-ran just the pushes
+   after logging in again. Consistent with this session's established
+   habit of reading full command output rather than trusting a reported
+   exit code, especially for a multi-step shell loop where one failing
+   step doesn't necessarily fail the whole batch's own exit code.
+
+**LLM default switched to `qwen3:14b`** (from `qwen2.5:latest`) in
+`backend/.env` per user request - confirmed already pulled locally via
+`ollama list`, and confirmed both the greeting fast-path (unaffected,
+keyword-only) and a real AI-mode search still work correctly with it
+(no stray `<think>`-style reasoning tokens leaking into the parsed
+reply - a real risk with newer "thinking" models, checked rather than
+assumed).
+
+## Vulnerability remediation round (2026-08-06)
+
+User took the mirrored images to the office; the company's scanner
+flagged all of them and refused to run them. Installed `trivy` (Docker
+Scout needs a Docker Hub login, not viable) and scanned every mirrored
+image for real (`trivy image --image-src remote <image>` - scanning the
+local Docker daemon's cache fails for these multi-platform pulls with
+"unable to get uncompressed layer"). **Mirroring itself introduces zero
+CVEs** - it's a byte-for-byte retag/push, no rebuild - these are all
+upstream's own baked-in vulnerabilities.
+
+Baseline (CRITICAL/HIGH counts):
+
+| Image | Critical | High |
+|---|---|---|
+| postgres:16-alpine | 1 | 14 |
+| camunda-bpm-platform:7.22.0 | 5 | 32 |
+| mysql:8.2 | 4 | 134 |
+| opensearch:2.19.3 | 6 | 286 |
+| cp-kafka:8.0.0 | 1 | 92 |
+| datahub-gms/frontend/upgrade:v1.5.0.6 | 0 each | 77/73/81 |
+| datahub-actions:v1.5.0.6-slim | 2 | 51 |
+
+User's direction: check for newer patch versions before anything else
+(not "ask IT for an exception", not "drop self-hosting"). Then, after
+seeing patch-level results, explicitly pushed for trying **higher**
+(not just patch) versions too. Findings, all from real `trivy` scans of
+the actual candidate tags (not guessed):
+
+- **mysql: `8.2` -> `8.4.9` (adopted).** `8.2` is a MySQL "Innovation"
+  release (short support window, already has zero further patch tags -
+  confirmed via the Docker Hub API) - this is *why* it was stuck at 4
+  critical/134 high, not bad luck. `8.4` is the current LTS track:
+  1 critical/40 high. Went further and scanned `9.7.2` (1 critical/**20**
+  high, better still) - but **live-tested it and it fails to boot**:
+  `--default-authentication-plugin=caching_sha2_password` (used in
+  `datahub/docker-compose.datahub.yml`'s mysql `command:`) was removed
+  as of MySQL 8.4 (`unknown variable` error, container aborts). Fixed by
+  dropping the flag entirely - it's been the default auth plugin since
+  8.0, so removing it changes nothing. Went with **`8.4.9`** over `9.7.2`
+  per user's choice: 9.x is itself another Innovation track (same
+  short-lifespan problem `8.2` had), 8.4 LTS trades a few more CVEs for
+  not having to repeat this whole exercise in a few months.
+- **cp-kafka: `8.0.0` -> `8.3.0` (adopted, latest available).**
+  0 critical/17 high, down from 1 critical/92 high. Live-tested: Kafka
+  itself works fine, but the healthcheck (`nc -z broker 9092`) started
+  failing - the `8.3.0` base image dropped `netcat` entirely (confirmed:
+  `nc: command not found`, exit 127, even though the broker was actually
+  up and answering on its real port). Fixed by switching the healthcheck
+  to `kafka-broker-api-versions --bootstrap-server broker:29092`.
+- **opensearch: `2.19.3` -> `2.19.6` (adopted, NOT `3.x`).**
+  1 critical/81 high, down from 6 critical/286 high. `3.8.0` scanned even
+  better (0 critical/24 high) but **live-tested against DataHub
+  v1.5.0.6's actual GMS and it hard-fails at startup** -
+  `SearchClientShimFactory` throws `Unable to detect search engine
+  type... OpenSearch: connected but version='3.8.0' (expected 2.x)`.
+  This isn't caution, it's a confirmed incompatibility: v1.5.0.6 only
+  speaks OpenSearch 2.x. Staying on `2.19.6` (the latest available patch
+  in the 2.19.x line) until/unless DataHub itself is upgraded past what
+  supports OpenSearch 3.
+- **camunda: `7.22.0` stays.** No patch tags exist for `7.22.0` itself;
+  the only newer options are different minor versions (`7.23.0`,
+  `7.24.0`), and `7.24.0` scanned *worse* (6 critical/39 high vs the
+  current 5/32) - not just unhelpful but a regression. Also out of scope
+  to change unilaterally: the company specifically confirmed running
+  7.22. No version-based remediation available for Camunda.
+- **postgres: `16-alpine` stays.** Already resolves to the latest
+  available 16.x/alpine patch combination - no newer tag to move to.
+- **DataHub's 4 images: `v1.5.0.6` stays.** `v1.6.0` exists and is
+  pullable, but scanned nearly identical (gms/frontend/upgrade: exactly
+  the same counts; actions: 51->47 high, marginal) for real compatibility
+  risk against a compose file that's been hand-adapted and verified
+  against `v1.5.0.6` specifically. Not worth it.
+
+**Net effect after adopting mysql:8.4.9 / opensearch:2.19.6 /
+cp-kafka:8.3.0**: a real, meaningful drop in CVE counts across the
+board, confirmed by live-testing every substituted image against the
+actual compose stack (not just scanned in isolation) - but **not
+zero**. Camunda alone still carries 5 critical/32 high with no
+available fix, and DataHub's 4 images still total roughly 280 high
+between them. If the office's scanner is a hard gate (any
+critical/high blocks the image outright, not just a warning), version
+selection alone will not get this stack under that bar - the
+unresolved question is whether the user pursues an IT/security
+exception process next, since "reconsider which services need
+self-hosting" was explicitly not the direction chosen.
+
+The three new images were re-mirrored to `ghcr.io/mail2yee/...`
+(`mysql:8.4.9`, `opensearch:2.19.6`, `cp-kafka:8.3.0`) the same way as
+before - confirmed `amd64/linux`, confirmed anonymous pull works (all
+already public since they're new tags under already-public
+repositories, no visibility flip needed this time).
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

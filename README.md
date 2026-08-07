@@ -16,13 +16,15 @@ Camunda), and what business logic / UI direction to carry over.
 
 **重要修正（2026-07-29）：Camunda 公司實際用的是 7.22 版**，不是原本以為的 Camunda 8（Zeebe/gRPC）——是完全不同的產品（REST API，沒有 gRPC/job worker 模型）。`camunda_client.py` 已經整個重寫並拿真實的本機 `camunda/camunda-bpm-platform:7.22.0` container 實測驗證過。
 
-**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **88** 個 pytest、前端 29 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 的 OpenAI-compatible 假設已經拿本機 Ollama 實測驗證過可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事，見下面「到公司後怎麼做」。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**Camunda 跟 DataHub 現在都可以完整本機自架**（`docker-compose.yml` 的 `camunda` service + `scripts/setup-datahub.sh`），整個「建立票單 -> Camunda 啟動流程 -> 簽核 -> Camunda 任務完成」的迴圈已經拿真實跑起來的 app 驗證過，不只是 curl 測試——細節見 `HANDOFF.md`「Camunda + DataHub: local hosting and the external-service switch」。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。**2026-08-04 確認 `ghcr.io` 公司防火牆連得到**——不只 backend/frontend，`camunda`、`postgres` 兩個 image 現在也是走這條路 mirror 過去的（公司內部的 Harbor/Nexus 沒有 Camunda image），細節見下面「Getting an image onto the air-gapped network」跟 `HANDOFF.md`「Getting Camunda + Postgres into the office network」。
+**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **88** 個 pytest、前端 29 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
 
-**架構：** 四個 container 用 `docker-compose` 跑——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 再讀寫 `postgres`（:5432，本機自架），也打 `camunda`（本機自架的 REST API，:8082），並對外打兩個內網服務：LLM gateway、DataHub 的 GraphQL API（本機開發時是獨立的 `datahub docker quickstart` stack，:8080）——任何一個打不通都有 fallback，不會直接掛掉。完整圖見下面「Architecture」章節。
+**2026-08-05 架構調整：Camunda、DataHub、Postgres 現在都是「預設自架 image，image 抓不到就退回 config 裡設定的公司真實服務」**（Postgres 除外，一律自架，沒有退回機制）。DataHub 從原本跟 sibling repo 共用的獨立 `datahub docker quickstart` stack，改成直接併進這個 repo 自己的 `docker-compose.yml`（`datahub/docker-compose.datahub.yml`，7 個 container：GMS、前端、MySQL、Kafka、OpenSearch、Actions、一次性 init job）。新增 **`./deploy.sh`** 作為一鍵部署入口——會依序嘗試 pull 每個 image，抓得到就自架、抓不到就跳過並讓 app 退回用 `backend/.env` 裡已經設定的公司端點。全部 9 個 image（backend、frontend、camunda、postgres、加上 DataHub 的 7 個）都走 `ghcr.io/mail2yee/...`，公司防火牆已確認連得到。細節見 `HANDOFF.md`「Self-hosted images with a config fallback」。
+
+**架構：** `docker-compose.yml` + 兩個可選的 overlay 檔案（`docker-compose.camunda.yml`、`datahub/docker-compose.datahub.yml`）——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 讀寫 `postgres`（:5432，本機自架，無退回機制），也打 `camunda`（本機自架 REST API，:8082，抓不到 image 就退回 config）、DataHub（本機自架 GMS，:18080，同樣抓不到就退回 config），對外打一個內網服務：LLM gateway。完整圖見下面「Architecture」章節。
 
 **程式碼在哪裡：** 後端邏輯全在 `backend/app/`——`main.py` 是所有 HTTP 路由、票單/簽核狀態機、`X-API-Key` 驗證，`chat.py` 是聊天助理（打招呼快速回覆、zero-hallucination 提示詞、LLM 打不通時的本地關鍵字 fallback、`keyword_search()` 一般搜尋模式），`config.py` 集中管理所有環境變數，`db.py` 是資料庫 model，`integrations/` 底下三個檔案分別對應 LLM/Camunda/DataHub 三個外部串接。前端在 `frontend/src/`——`App.jsx` 管全域狀態，`api.js` 是所有後端呼叫（含手刻的 SSE 串流解析），`i18n.js` 管中英文字串，`components/` 底下一個檔案一個 UI 元件。完整逐檔案說明見下面「Code map」章節。
 
-**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗）——裡面預設值是假的 LLM/DataHub 端點，先用預設值就能跑起來看 fallback 行為（Camunda 預設就是本機真的跑起來，不是 fallback），之後知道真實內網端點再回來改。接著本機（家裡）直接 `docker compose up --build` 就能跑。公司內網因為連不到 PyPI/npm，第一步應該先直接在公司試同一條指令——如果內網本身有設定 registry mirror 可能就直接通了；如果 `pip install`/`npm ci` 卡住，才需要退回「家裡先 build 好 image，想辦法弄進公司內網」這條路，用已經 build/mirror 好、設成 public 的 GHCR image（`docker compose pull` 不用登入就能拉，`ghcr.io` 公司防火牆已確認連得到）——`backend`/`frontend` 是這個 repo 自己 build 的，`camunda`/`postgres` 是從 Docker Hub mirror 過去的（因為公司的 Harbor 沒有 Camunda image）。完整決策流程、指令、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
+**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗；`./deploy.sh` 會自動幫你做這步）。接著跑 `./deploy.sh` 就好——不管在家還是在公司都用同一支腳本：backend/frontend 會先嘗試從本機原始碼 build（在家會成功；公司如果 `pip install`/`npm ci` 連不到 mirror 會失敗，這時腳本會自動改成從 `ghcr.io` pull 已經 build 好的版本），Camunda/DataHub 會嘗試 pull 對應的 image，抓不到就自動跳過、讓 app 退回 `backend/.env` 裡設定的公司端點。完整決策流程、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
 
 ## 到公司後怎麼做（照順序，一步一步）
 
@@ -39,34 +41,21 @@ Camunda), and what business logic / UI direction to carry over.
   ```
 - **GitHub 網頁「Download ZIP」解壓縮**：不用設定 git 帳密，簡單，但拿到的資料夾沒有 `.git`——之後沒辦法 `git pull`、也沒辦法自動 push 診斷結果，要手動複製貼上回來給我。
 
-**Step 1 — 建立設定檔（必須，否則連啟動都會失敗）**
+**Step 1 — 一鍵部署**
 ```bash
-cp backend/.env.example backend/.env
+./deploy.sh
 ```
-先不改內容也能跑（會用假的 LLM/DataHub 端點，你會看到 fallback 行為，例如搜尋會退回本地關鍵字比對；Camunda 不算在這裡面，它預設就是本機真的跑起來，不是 fallback）——這是正常的，不是壞掉，Step 5 再回來接公司真實的 LLM。
+這支腳本會自動處理以前 Step 1-3 的所有事：建立 `backend/.env`/`.env`（不存在就從 `.env.example` 複製）、backend/frontend 先嘗試從本機原始碼 build（測的是 base image 拉不拉得到、`pip install`/`npm ci` 走不走得到 mirror）、失敗就自動改成從 `ghcr.io` pull 已經 build 好的版本；Camunda 跟 DataHub（7 個 image）各自嘗試 pull，抓不到就自動跳過、讓 app 退回 `backend/.env` 裡設定的端點，不會卡住整個部署。跑完會印出每個服務最後是「自架」還是「退回 config」。Postgres 沒有退回機制，抓不到會直接報錯——這是設計上刻意的，不是漏做。
 
-**Step 2 — 第一次嘗試：直接在公司 build**
-```bash
-docker compose up --build
-```
-`camunda`、`postgres` 這兩個 image 現在已經是從 `ghcr.io` 拉（2026-08-04 確認公司防火牆連得到，不再依賴公司的 Harbor/Nexus，那邊本來就沒有 Camunda image），所以這行真正還不確定的，只剩 `backend`/`frontend` 自己 build 的部分：base image（`python:3.11-slim`/`node:20-alpine` 等）拉不拉得到、`pip install` 走不走得到 PyPI mirror、`npm ci` 走不走得到 npm mirror。**如果這行成功，直接跳到 Step 4**，不用管 Step 3。
+如果 `./deploy.sh` 整個失敗（連 Postgres 都抓不到），先不要繼續往下試，跳到最下面「有問題怎麼辦」那段，把診斷結果帶回來，我們再一起想下一步。
 
-**Step 3 — 如果 Step 2 失敗（`pip install`/`npm ci` 卡住）：全部改拉已經 build/mirror 好的 image**
-```bash
-docker compose pull
-docker compose up -d
-```
-四個 image（`backend`/`frontend` 是這個 repo 自己 build 的，`camunda`/`postgres` 是從 Docker Hub mirror 過去的）都已經 push 到 `ghcr.io` 並設成 public，不用登入就能拉，公司防火牆連不連得到 `ghcr.io` 這件事本身已經確認過沒問題（2026-08-04）。這步理論上應該會成功——如果還是失敗，代表公司網路狀況跟上次測的時候不一樣了，值得先確認這點，而不是照舊假設。
-
-如果 Step 3 也失敗：先不要繼續往下試，跳到最下面「有問題怎麼辦」那段，把診斷結果帶回來，我們再一起想下一步。
-
-**Step 4 — 確認真的跑起來了**
+**Step 2 — 確認真的跑起來了**
 ```bash
 curl http://localhost:8000/health   # 應該回傳 {"status":"ok"}
 ```
 瀏覽器打開 http://localhost:8090 應該看到「智慧資料治理平台」畫面，可以試著搜尋一句話看看（現在還沒接公司 LLM，會走 fallback，屬於正常現象）。
 
-**Step 5 — 接上公司真實的 LLM（如果你已經知道公司內部 gateway 的網址/model 名稱）**
+**Step 3 — 接上公司真實的 LLM（如果你已經知道公司內部 gateway 的網址/model 名稱）**
 
 編輯 `backend/.env`，把這三行改成公司真實的值：
 ```bash
@@ -78,9 +67,9 @@ LLM_API_KEY=<如果 gateway 需要驗證的話，不需要就留空>
 ```bash
 docker compose up -d --force-recreate backend
 ```
-再回 Step 4 測一次搜尋，這次應該會真的呼叫公司的 LLM，不再是 fallback（可以從瀏覽器的「顯示思考過程」或 `docker compose logs backend` 觀察差異）。
+再回 Step 2 測一次搜尋，這次應該會真的呼叫公司的 LLM，不再是 fallback（可以從瀏覽器的「顯示思考過程」或 `docker compose logs backend` 觀察差異）。
 
-**Step 6（選用）— 跑 eval，看公司 model 表現怎麼樣**
+**Step 4（選用）— 跑 eval，看公司 model 表現怎麼樣**
 ```bash
 pip install -r backend/requirements-eval.txt
 DGO_EVAL_JUDGE_MODEL=<公司 model 名稱> \
@@ -113,25 +102,29 @@ pytest backend/evals/ -v -s
   run through every flow against the real backend — zero console errors.
 - **Camunda 7.22 (REST API — corrected 2026-07-29 from an earlier, wrong
   Camunda 8/Zeebe assumption) and DataHub (GraphQL) integrations are
-  real, wired clients**, and both can now be **fully self-hosted
-  locally**: `docker-compose.yml`'s `camunda` service (auto-deploys
-  `camunda/data-gov-approval.bpmn` on startup) and
-  `scripts/setup-datahub.sh` (its own `datahub docker quickstart` stack +
-  sample dataset seeding). The complete loop — create a ticket -> Camunda
-  starts a process instance -> an owner approves in-app -> that owner's
-  Camunda task completes -> ticket reaches APPROVED and the Camunda
-  process instance ends — is verified end-to-end through the actual
-  running app, not just curl against a standalone container. See
-  HANDOFF.md "Camunda + DataHub: local hosting and the external-service
-  switch" for the full writeup, including the config switch to point
-  either one at the company's real external service instead
-  (`CAMUNDA_BASE_URL`/`DATAHUB_API_URL`, no code change needed) and gaps
+  real, wired clients**, and both are **self-hosted by default** as part
+  of this repo's own `docker-compose.yml` (via `docker-compose.camunda.yml`
+  and `datahub/docker-compose.datahub.yml` - DataHub is 7 containers:
+  GMS, frontend, MySQL, Kafka, OpenSearch, Actions, a one-shot init job).
+  The complete loop — create a ticket -> Camunda starts a process
+  instance -> an owner approves in-app -> that owner's Camunda task
+  completes -> ticket reaches APPROVED and the Camunda process instance
+  ends — is verified end-to-end through the actual running app, not just
+  curl against a standalone container. See HANDOFF.md "Self-hosted
+  images with a config fallback" for the full writeup, including gaps
   still explicitly deferred (approval-endpoint auth, email
   notifications, ticket deep-linking).
+- **`./deploy.sh` decides, per service, whether to self-host or fall back
+  to the company's real endpoint** (2026-08-05): tries to pull each
+  image, self-hosts it if that works, otherwise skips it and leaves
+  `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` as whatever's already in
+  `backend/.env`. Postgres has no fallback - self-hosting it is the
+  actual plan, a failed pull is a hard error. See "Getting an image onto
+  the air-gapped network" below.
 - LLM integration assumes an OpenAI-compatible endpoint — **confirmed
-  working against a real local Ollama** (2026-07-28), but still
-  **unconfirmed against the company's actual on-prem gateway** (a
-  different, untested endpoint), see
+  working against a real local Ollama** (currently `qwen3:14b`, see
+  `backend/.env`), but still **unconfirmed against the company's actual
+  on-prem gateway** (a different, untested endpoint), see
   `backend/app/integrations/llm_client.py`.
 - WrenAI, embedded as a Python library (not a separate service - see
   HANDOFF.md), enforces zero-hallucination product matching for
@@ -153,8 +146,8 @@ pytest backend/evals/ -v -s
   it unreliable on a small local model; unmatched queries are logged
   instead for offline, human-reviewed triage
   (`backend/scripts/review_unmatched_queries.py`) — see HANDOFF.md.
-- **`camunda`/`postgres` now mirror from GHCR** (2026-08-04), same as
-  `backend`/`frontend` — confirmed the office network can reach
+- **All 9 images mirror from GHCR** (`backend`, `frontend`, `camunda`,
+  `postgres`, and DataHub's 7) — confirmed the office network can reach
   `ghcr.io` even though it can't reach Docker Hub or the company's own
   Harbor/Nexus (neither has a Camunda image). See "Getting an image onto
   the air-gapped network" below.
@@ -165,16 +158,24 @@ pytest backend/evals/ -v -s
 flowchart LR
     U["Browser"]
 
-    subgraph compose["docker-compose (this repo)"]
+    subgraph compose["docker-compose.yml (always)"]
         FE["frontend\nReact + Vite, served by nginx\n:8090"]
         BE["backend\nFastAPI\n:8000"]
-        PG[("postgres:16\n:5432")]
+        PG[("postgres:16\n:5432\nno fallback - self-hosted always")]
+    end
+
+    subgraph camoverlay["docker-compose.camunda.yml\n(included if image pullable)"]
         CAM["camunda\ncamunda-bpm-platform:7.22.0\nREST /engine-rest, :8082"]
     end
 
-    subgraph ext["On-prem integrations (company network) /\nlocally self-hosted equivalents"]
+    subgraph dhoverlay["datahub/docker-compose.datahub.yml\n(included if all 7 images pullable)"]
+        DH["datahub-gms + 6 more\n(frontend, mysql, kafka,\nopensearch, actions, init job)\n:18080"]
+    end
+
+    subgraph ext["Company network - config fallback\nwhen the overlay above is skipped"]
         LLM["LLM gateway\nOpenAI-compatible (assumed,\nunconfirmed against real endpoint)"]
-        DH["DataHub GraphQL API\n(local: own docker quickstart\nstack, :8080 - see setup-datahub.sh)"]
+        CAMREAL["Company's real Camunda 7\n(CAMUNDA_BASE_URL)"]
+        DHREAL["Company's real DataHub\n(DATAHUB_API_URL)"]
     end
 
     WREN["WrenAI (wrenai package)\nembedded in backend process,\ngoverned SQL against data_products"]
@@ -185,8 +186,10 @@ flowchart LR
     FE -->|"REST + SSE: /chat, /tickets"| BE
     BE --> PG
     BE -->|"chat completions, streamed"| LLM
-    BE -->|"start process, complete owner task\n(REST /engine-rest)"| CAM
-    BE -->|"query catalog\n(GraphQL)"| DH
+    BE -->|"start process, complete owner task"| CAM
+    BE -.->|"if camunda overlay skipped"| CAMREAL
+    BE -->|"query catalog (GraphQL)"| DH
+    BE -.->|"if datahub overlay skipped"| DHREAL
     BE -->|"sync catalog + governed SQL"| WREN
     WREN --> PG
     BE -. on any integration failure .-> MOCK
@@ -249,58 +252,63 @@ flowchart LR
 
 ### Getting an image onto the air-gapped network
 
-The open question is *how the backend/frontend images get built* when
-the company network can reach GitHub but not PyPI/npm/Docker Hub
-directly (see `HANDOFF.md` "Why this repo exists" for the full
-constraint). `camunda`/`postgres` are a solved problem now (both mirror
-from GHCR, confirmed reachable from the office - see below); the open
-part is specifically whether `backend`/`frontend` can `pip install`/
-`npm ci` on-site. Try these **in order** — each one only matters if the
-previous one fails:
+`./deploy.sh` automates the whole decision below - this section is what
+it's actually doing under the hood, useful if it fails somewhere and
+you need to debug a specific step. The company network can reach GitHub
+but not PyPI/npm/Docker Hub directly (see `HANDOFF.md` "Why this repo
+exists" for the full constraint) - **but does reach `ghcr.io`**,
+confirmed from the office 2026-08-04.
 
 ```mermaid
 flowchart TD
-    A["office: git pull\ndocker compose up --build"] -->|works| Z["done - internal PyPI/npm\nmirror covers backend/frontend too"]
-    A -->|"pip install / npm ci fails\n(no PyPI/npm mirror)"| B["office: docker compose pull && up\n(all 4 images from ghcr.io, confirmed reachable)"]
+    A["docker compose build\nbackend/frontend"] -->|works| Z1["use the freshly-built images"]
+    A -->|"pip install / npm ci fails\n(no PyPI/npm mirror)"| B["docker compose pull\nbackend/frontend from ghcr.io"]
+    C["docker compose pull\ncamunda / datahub's 7 images"] -->|each succeeds| Z2["self-host that service"]
+    C -->|"pull fails for that service"| D["skip it - app falls back to\nbackend/.env's CAMUNDA_BASE_URL /\nDATAHUB_API_URL instead"]
+    E["docker compose pull postgres"] -->|fails| F["hard error - no fallback,\nfix connectivity to ghcr.io"]
 ```
 
-**Step 1 — just try it at the office first, before anything else:**
-```bash
-git pull
-docker compose up --build
-```
-`camunda`/`postgres` will pull from `ghcr.io` regardless (already
-confirmed working from the office - see below), so this command really
-only tests whether `backend`/`frontend` can build on-site: whether the
-Docker daemon's registry mirror covers the base images
-(`python:3.11-slim`, `node:20-alpine`, `nginx:alpine` — many corporate
-Docker setups configure a transparent `registry-mirrors` entry in
-`daemon.json` for this, no Dockerfile change needed), whether `pip
-install` reaches an internal PyPI mirror, and whether `npm ci` reaches
-an internal npm mirror. If this works, nothing else in this section is
-needed.
+**Backend/frontend**: `docker-compose.yml` sets both `image:` (
+`ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`)
+and `build:` - `deploy.sh` tries `docker compose build` first (tests
+whether the Docker daemon's registry mirror covers the base images
+`python:3.11-slim`/`node:20-alpine`/`nginx:alpine`, and whether
+`pip install`/`npm ci` reach internal mirrors), falling back to
+`docker compose pull` only if that fails. **Build first, not pull
+first, is deliberate** - a bare pull would happily succeed against
+whatever was last published to `ghcr.io` and silently use a stale image
+even when local source has changed (confirmed this the hard way once,
+see HANDOFF.md).
 
-**Step 2 — if `pip`/`npm` can't reach a mirror,** the image has to be
-built somewhere with internet access (i.e. at home) and gotten onto the
-company network some other way.
+**Camunda/DataHub**: `deploy.sh` tries `docker compose pull` for each
+(all 7 images for DataHub) and only includes that service's compose
+overlay file (`docker-compose.camunda.yml` /
+`datahub/docker-compose.datahub.yml`) if the pull succeeds - see
+HANDOFF.md's "Self-hosted images with a config fallback" for exactly
+how the fallback to `backend/.env`'s config works.
+
+**Postgres**: no fallback - `deploy.sh` treats a failed pull as a hard
+error, since self-hosting Postgres is the actual plan here, not
+something to gracefully degrade out of.
 
 - **Internal registries (Harbor, Nexus)**: confirmed 2026-08-04 these
   exist but don't mirror everything - no Camunda image there, for one.
-  Still worth checking first for anything they *do* have (see below).
+  Still worth checking first for anything they *do* have.
 - **GHCR path (`ghcr.io`) — confirmed working end-to-end, including from
   the office (2026-08-04):** `docker-compose.yml`'s `backend`/`frontend`
   services set `image:` to
   `ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`
   alongside `build:` (`docker compose build` at home tags it, `docker
-  compose push` publishes it). **`camunda` and `postgres` use the same
-  path now too** (`ghcr.io/mail2yee/camunda-bpm-platform:7.22.0`,
-  `ghcr.io/mail2yee/postgres:16-alpine`) - since neither is built by this
-  repo, `scripts/mirror-image-to-ghcr.sh` does the pull-retag-push for
-  those instead of `docker compose build`. All four images are flipped
-  to **public** — confirmed by logging out locally and pulling
-  anonymously (no `docker login` at all) successfully. So the office
-  side really can just be `git pull && docker compose pull && docker
-  compose up -d`, no PAT needed there.
+  compose push` publishes it). **`camunda`, `postgres`, and DataHub's 7
+  images all use the same path too** (`ghcr.io/mail2yee/camunda-bpm-platform:7.22.0`,
+  `ghcr.io/mail2yee/postgres:16-alpine`,
+  `ghcr.io/mail2yee/{datahub-gms,datahub-frontend-react,datahub-actions,datahub-upgrade,mysql,opensearch,cp-kafka}:...`)
+  - since none of these are built by this repo,
+  `scripts/mirror-image-to-ghcr.sh` does the pull-retag-push for those
+  instead of `docker compose build`. All 9 images are flipped to
+  **public** — confirmed by logging out locally and pulling anonymously
+  (no `docker login` at all) successfully. So the office side really can
+  just be `git pull && ./deploy.sh`, no PAT needed there.
   **`ghcr.io` reachability from the office is now confirmed** (2026-08-04
   - it's a different host than `github.com`, which was already known to
   work, so this needed its own test). Revisit switching the packages
@@ -414,24 +422,30 @@ after changing it — Vite bakes it in at build time, see
 against.
 
 ```bash
-docker compose up --build
+./deploy.sh
 ```
 
-This alone gives you Postgres + a self-hosted Camunda 7.22 (the
-`camunda` service auto-deploys `camunda/data-gov-approval.bpmn`) + the
-backend/frontend — the full ticket/approval/Camunda-task-completion loop
-works with zero extra setup. DataHub is optional and self-hosted
-separately (its own `datahub docker quickstart` stack, not part of this
-compose file — see `scripts/setup-datahub.sh`); without it, the app falls
-back to its built-in 3-item mock catalog automatically.
+Camunda and DataHub are both self-hosted by default (as part of this
+same command) - `deploy.sh` only skips one if its image can't be pulled,
+falling back to whatever `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` is set to
+in `backend/.env` instead (see HANDOFF.md's "Self-hosted images with a
+config fallback"). Postgres has no such fallback - self-hosting it is
+the actual plan. The full ticket/approval/Camunda-task-completion loop
+and a real DataHub-backed catalog both work with zero extra setup beyond
+this one command. Equivalent to (and this is what `deploy.sh` actually
+runs under the hood):
+```bash
+docker compose -f docker-compose.yml -f docker-compose.camunda.yml -f datahub/docker-compose.datahub.yml up --build -d
+```
 
 - Frontend: http://localhost:8090
 - Backend: http://localhost:8000 (docs at `/docs`)
 - Postgres: localhost:5432 (user/pass/db: `dgo`/`dgo`/`dgo`)
 - Camunda: http://localhost:8082/engine-rest (REST API, no UI)
-- DataHub (if `scripts/setup-datahub.sh` has been run): GMS
-  http://localhost:8080, UI http://localhost:9002
-  (user/pass: `datahub`/`datahub`)
+- DataHub: GMS http://localhost:18080, UI http://localhost:19002
+  (user/pass: `datahub`/`datahub`) - seed it with sample data via
+  `scripts/setup-datahub.sh` (now points at this self-hosted instance,
+  not the old shared one)
 
 Or run backend/frontend separately without Docker — see
 `backend/README.md` and `frontend/README.md` (same `backend/.env` config
