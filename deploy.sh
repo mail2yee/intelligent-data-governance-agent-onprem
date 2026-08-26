@@ -30,10 +30,13 @@ set -uo pipefail
 #                          point is not depending on any GHCR-hosted
 #                          image at the office anymore.
 #
-# Postgres is unchanged in both modes: always self-hosted via image, no
-# fallback - see docker-compose.yml's comment for why (the company's
-# own Postgres is an unwieldy HA setup, self-hosting a plain instance is
-# the actual plan, not a convenience).
+# MariaDB (the app's own DB, switched from Postgres 2026-08-26 - see
+# HANDOFF.md's "DB engine switched to MariaDB" section) is unchanged in
+# both modes: always self-hosted via image, no fallback - see
+# docker-compose.yml's comment for why (the company's own Postgres is
+# an unwieldy HA setup, self-hosting our own instance is the actual
+# plan, not a convenience - MariaDB doesn't change that reasoning at
+# all, it's just a different self-hosted engine).
 #
 # See HANDOFF.md's "Self-hosted images with a config fallback" and
 # "Office mode" sections for the full reasoning.
@@ -60,13 +63,13 @@ fi
 COMPOSE_FILES=(-f docker-compose.yml)
 
 echo
-echo "== Postgres (mandatory - no fallback, same in every mode) =="
-if docker compose pull postgres; then
-  echo "postgres: OK"
+echo "== MariaDB (mandatory - no fallback, same in every mode) =="
+if docker compose pull mariadb; then
+  echo "mariadb: OK"
 else
-  echo "ERROR: could not pull the postgres image (ghcr.io/mail2yee/postgres:16-alpine)." >&2
-  echo "Unlike Camunda/DataHub, this app doesn't fall back to a company Postgres" >&2
-  echo "automatically - self-hosting Postgres is the actual plan here. Fix" >&2
+  echo "ERROR: could not pull the mariadb image (ghcr.io/mail2yee/mariadb:11.4)." >&2
+  echo "Unlike Camunda/DataHub, this app doesn't fall back to a company database" >&2
+  echo "automatically - self-hosting it is the actual plan here. Fix" >&2
   echo "connectivity to ghcr.io and retry." >&2
   exit 1
 fi

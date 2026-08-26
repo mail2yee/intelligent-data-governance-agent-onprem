@@ -1,36 +1,46 @@
 services:
-  # Mirrored to GHCR (2026-08-04) via scripts/mirror-image-to-ghcr.sh -
-  # confirmed the office network can't reach Docker Hub directly but CAN
-  # reach ghcr.io (same path already proven for backend/frontend below).
-  # This is a straight retag/push, not a rebuild - all config here still
-  # happens the same way, via environment/volumes, same as always.
-  # **Dev-environment choice, not a production plan**: self-hosting
-  # Postgres like this is fine for a personal/team dev environment, but
-  # the company has its own managed HA Postgres service - revisit before
+  # Switched from Postgres to MariaDB (2026-08-26) - see HANDOFF.md's "DB
+  # engine switched to MariaDB" section. Mirrored to GHCR via
+  # scripts/mirror-image-to-ghcr.sh - confirmed the office network can't
+  # reach Docker Hub directly but CAN reach ghcr.io (same path already
+  # proven for backend/frontend below). This is a straight retag/push,
+  # not a rebuild - all config here still happens the same way, via
+  # environment/volumes, same as always.
+  # **Dev-environment choice, not a production plan**: self-hosting like
+  # this is fine for a personal/team dev environment, but revisit before
   # any shared/production deployment (K8s or otherwise), see HANDOFF.md.
   # To refresh the version: re-run the mirror script with a new source
   # tag, then update the tag below to match.
-  postgres:
-    image: ghcr.io/mail2yee/postgres:16-alpine
+  mariadb:
+    image: ghcr.io/mail2yee/mariadb:11.4
     # Pinned amd64 for the same reason as backend/frontend below - the
     # mirrored image is intentionally amd64 (the company's real target),
     # not this dev machine's native arch. Runs under QEMU emulation on
     # Apple Silicon (slower, but only matters for local dev).
     platform: linux/amd64
     environment:
-      POSTGRES_USER: dgo
+      MARIADB_USER: dgo
       # Defaults to a weak password so `docker compose up` works with zero
       # setup for local dev - never rely on this default outside local dev.
-      # Set a real POSTGRES_PASSWORD in a root .env file (not committed) to
+      # Set a real MARIADB_PASSWORD in a root .env file (not committed) to
       # override it.
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dgo}
-      POSTGRES_DB: dgo
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-dgo}
+      MARIADB_DATABASE: dgo
+      # root password is otherwise required by the image and would
+      # generate a random one on every container recreation - fixed to
+      # avoid that surprise, even though nothing here uses the root user.
+      MARIADB_ROOT_PASSWORD: ${MARIADB_PASSWORD:-dgo}
     ports:
-      - "5432:5432"
+      # Host port 3307, not MySQL's usual 3306 - a sibling project's own
+      # unrelated MySQL container already claims 3306 on this dev
+      # machine (confirmed the hard way). Container-to-container traffic
+      # (backend -> mariadb, below) uses the container's internal 3306
+      # regardless - this remap only affects access from outside Docker.
+      - "3307:3306"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - mariadbdata:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dgo"]
+      test: ["CMD-SHELL", "mariadb-admin ping -h localhost -u dgo -p${MARIADB_PASSWORD:-dgo}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -59,13 +69,13 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://dgo:${POSTGRES_PASSWORD:-dgo}@postgres:5432/dgo
+      DATABASE_URL: mysql+asyncmy://dgo:${MARIADB_PASSWORD:-dgo}@mariadb:3306/dgo
       # Read by wren/project/connection_profile.json at container startup
       # (backend/entrypoint.sh's `wren profile add`) - WrenAI needs its
       # own host/user/password/database fields, not just a DSN string.
-      POSTGRES_USER: dgo
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dgo}
-      POSTGRES_DB: dgo
+      MARIADB_USER: dgo
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-dgo}
+      MARIADB_DATABASE: dgo
       WREN_PROJECT_PATH: /app/wren_project
       # No CAMUNDA_BASE_URL/DATAHUB_API_URL override here on purpose -
       # deliberately left to fall through to backend/.env's own value
@@ -79,7 +89,7 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
+      mariadb:
         condition: service_healthy
 
   frontend:
@@ -107,4 +117,4 @@ services:
       - backend
 
 volumes:
-  pgdata:
+  mariadbdata:

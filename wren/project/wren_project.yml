@@ -1,5 +1,5 @@
 schema_version: 2
 name: dgo_catalog
 catalog: dgo
-schema: public
-data_source: postgres
+schema: dgo
+data_source: mysql

@@ -1,8 +1,9 @@
 {
-  "datasource": "postgres",
-  "host": "postgres",
-  "port": 5432,
-  "database": "${POSTGRES_DB}",
-  "user": "${POSTGRES_USER}",
-  "password": "${POSTGRES_PASSWORD}"
+  "datasource": "mysql",
+  "host": "mariadb",
+  "port": "3306",
+  "database": "${MARIADB_DATABASE}",
+  "user": "${MARIADB_USER}",
+  "password": "${MARIADB_PASSWORD}",
+  "ssl_mode": "disabled"
 }

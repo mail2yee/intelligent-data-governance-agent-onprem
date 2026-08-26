@@ -1,6 +1,6 @@
 name: data_products
 table_reference:
-  schema: public
+  schema: dgo
   table: data_products
 columns:
   - name: id

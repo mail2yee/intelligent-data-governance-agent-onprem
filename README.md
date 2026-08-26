@@ -3,7 +3,7 @@
 On-prem build of the data governance agent, for the company's air-gapped
 internal network. See **`HANDOFF.md` first** — it explains why this is a
 separate repo from the GCP PoC, what's swapped (Gemini → on-prem LLM,
-Firestore → PostgreSQL, Dataplex → DataHub, Camunda SaaS → self-managed
+Firestore → MariaDB, Dataplex → DataHub, Camunda SaaS → self-managed
 Camunda), and what business logic / UI direction to carry over.
 
 ## 中文說明
@@ -12,21 +12,23 @@ Camunda), and what business logic / UI direction to carry over.
 
 **這是什麼：** GCP PoC（`data_governance_agent_poc.ai`，另一個 repo）的 on-prem 重建版，因為公司內網是氣隔離（air-gapped）——連得到 GitHub，但連不到 PyPI/npm/Docker Hub——原本 PoC 用的 Gemini/Firestore/Dataplex/Camunda SaaS 全部要換成內網可用的服務。兩個 repo **故意不共用程式碼**，重用的是行為/設計，不是檔案。細節在 `HANDOFF.md`。
 
-**技術堆疊：** 後端 FastAPI + PostgreSQL，前端 React + Vite，Camunda（REST API）跟 DataHub（GraphQL）都是真的串接（不是 mock），串不上時會 graceful fallback（例如查目錄失敗就退回內建的假目錄，LLM 打不通就退回本地關鍵字比對）。另外還內嵌了 WrenAI（`wrenai` pip 套件，**不是**另外一個 service）當語意層——LLM 對照語意模型欄位名組 SQL，WrenAI 的 governed engine 執行並擋掉任何沒宣告過的欄位/資料表，用來取代原本「靠 prompt 指令+事後字串比對」的推薦機制，讓「這句話該推薦哪個資料主體」這件事變成結構性零幻想，而不是只靠 LLM 自己乖。
+**技術堆疊：** 後端 FastAPI + MariaDB，前端 React + Vite，Camunda（REST API）跟 DataHub（GraphQL）都是真的串接（不是 mock），串不上時會 graceful fallback（例如查目錄失敗就退回內建的假目錄，LLM 打不通就退回本地關鍵字比對）。另外還內嵌了 WrenAI（`wrenai` pip 套件，**不是**另外一個 service）當語意層——LLM 對照語意模型欄位名組 SQL，WrenAI 的 governed engine 執行並擋掉任何沒宣告過的欄位/資料表，用來取代原本「靠 prompt 指令+事後字串比對」的推薦機制，讓「這句話該推薦哪個資料主體」這件事變成結構性零幻想，而不是只靠 LLM 自己乖。
 
 **重要修正（2026-07-29）：Camunda 公司實際用的是 7.22 版**，不是原本以為的 Camunda 8（Zeebe/gRPC）——是完全不同的產品（REST API，沒有 gRPC/job worker 模型）。`camunda_client.py` 已經整個重寫並拿真實的本機 `camunda/camunda-bpm-platform:7.22.0` container 實測驗證過。
 
 **目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **88** 個 pytest、前端 29 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
 
-**2026-08-05 架構調整：Camunda、DataHub、Postgres 現在都是「預設自架 image，image 抓不到就退回 config 裡設定的公司真實服務」**（Postgres 除外，一律自架，沒有退回機制）。DataHub 從原本跟 sibling repo 共用的獨立 `datahub docker quickstart` stack，改成直接併進這個 repo 自己的 `docker-compose.yml`（`datahub/docker-compose.datahub.yml`，7 個 container：GMS、前端、MySQL、Kafka、OpenSearch、Actions、一次性 init job）。新增 **`./deploy.sh`** 作為一鍵部署入口——會依序嘗試 pull 每個 image，抓得到就自架、抓不到就跳過並讓 app 退回用 `backend/.env` 裡已經設定的公司端點。全部 9 個 image（backend、frontend、camunda、postgres、加上 DataHub 的 7 個）都走 `ghcr.io/mail2yee/...`，公司防火牆已確認連得到。細節見 `HANDOFF.md`「Self-hosted images with a config fallback」。
+**2026-08-05 架構調整：Camunda、DataHub、Postgres 現在都是「預設自架 image，image 抓不到就退回 config 裡設定的公司真實服務」**（Postgres 除外，一律自架，沒有退回機制）。DataHub 從原本跟 sibling repo 共用的獨立 `datahub docker quickstart` stack，改成直接併進這個 repo 自己的 `docker-compose.yml`（`datahub/docker-compose.datahub.yml`，7 個 container：GMS、前端、MySQL、Kafka、OpenSearch、Actions、一次性 init job）。新增 **`./deploy.sh`** 作為一鍵部署入口——會依序嘗試 pull 每個 image，抓得到就自架、抓不到就跳過並讓 app 退回用 `backend/.env` 裡已經設定的公司端點。全部 9 個 image（backend、frontend、camunda、mariadb、加上 DataHub 的 7 個）都走 `ghcr.io/mail2yee/...`，公司防火牆已確認連得到。細節見 `HANDOFF.md`「Self-hosted images with a config fallback」。
 
 **2026-08-26 再調整：Camunda/DataHub 的「image 路線」放棄了。** 帶去公司實測後，這些 image 全部被公司的漏洞掃描擋下來，換了幾輪更高/更新的版本（`mysql`→8.4.9、`opensearch`→2.19.6、`cp-kafka`→8.3.0，全部實測過相容性）也只能把數字壓低，壓不到零——Camunda 本身沒有更新版本可換，卡在 5 critical/32 high。與其繼續跟 CVE 數字纏鬥，公司端現在**直接不自架 Camunda/DataHub，一律用 config 接公司自己已經核准的服務**；backend/frontend 也一併不再從 `ghcr.io` pull，公司端只用 `git pull` + 現場 `docker build`。本機 dev 環境不受影響，一樣自架整套方便測試。用法：`./deploy.sh --office`。細節見 `HANDOFF.md`「Office mode」。
 
-**架構：** `docker-compose.yml` + 兩個可選的 overlay 檔案（`docker-compose.camunda.yml`、`datahub/docker-compose.datahub.yml`）——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 讀寫 `postgres`（:5432，本機自架，無退回機制），也打 `camunda`（本機自架 REST API，:8082，抓不到 image 就退回 config）、DataHub（本機自架 GMS，:18080，同樣抓不到就退回 config），對外打一個內網服務：LLM gateway。完整圖見下面「Architecture」章節。
+**2026-08-27：資料庫從 Postgres 換成 MariaDB。** 跟漏洞掃描無關（MariaDB 掃出來的數字其實還比 Postgres 差一點），純粹是想要自己完全掌控這顆資料庫，不想接公司那套肥 HA Postgres。`backend/app/db.py`（MySQL/MariaDB 的 VARCHAR 一定要指定長度，跟 Postgres 不一樣，已經全部補上）、WrenAI 的 `connection_profile.json`（`datasource` 改 `mysql`，MariaDB 走 MySQL 協定相容）都已經改完並實測過（真的建表、真的建立票單、真的讓 WrenAI 執行 SQL 查詢）。細節見 `HANDOFF.md`「DB engine switched to MariaDB」。
+
+**架構：** `docker-compose.yml` + 兩個可選的 overlay 檔案（`docker-compose.camunda.yml`、`datahub/docker-compose.datahub.yml`）——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 讀寫 `mariadb`（:3307，本機自架，無退回機制），也打 `camunda`（本機自架 REST API，:8082，抓不到 image 就退回 config）、DataHub（本機自架 GMS，:18080，同樣抓不到就退回 config），對外打一個內網服務：LLM gateway。完整圖見下面「Architecture」章節。
 
 **程式碼在哪裡：** 後端邏輯全在 `backend/app/`——`main.py` 是所有 HTTP 路由、票單/簽核狀態機、`X-API-Key` 驗證，`chat.py` 是聊天助理（打招呼快速回覆、zero-hallucination 提示詞、LLM 打不通時的本地關鍵字 fallback、`keyword_search()` 一般搜尋模式），`config.py` 集中管理所有環境變數，`db.py` 是資料庫 model，`integrations/` 底下三個檔案分別對應 LLM/Camunda/DataHub 三個外部串接。前端在 `frontend/src/`——`App.jsx` 管全域狀態，`api.js` 是所有後端呼叫（含手刻的 SSE 串流解析），`i18n.js` 管中英文字串，`components/` 底下一個檔案一個 UI 元件。完整逐檔案說明見下面「Code map」章節。
 
-**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗；`./deploy.sh` 會自動幫你做這步）。在家用 `./deploy.sh`（不加參數）——backend/frontend 從本機原始碼 build，Camunda/DataHub 各自嘗試 pull image，抓得到就自架、抓不到才退回 `backend/.env` 裡的端點。**到公司用 `./deploy.sh --office`**——這個模式下 Camunda/DataHub 完全不會嘗試自架（連 pull 都不會做），一律直接用 `backend/.env` 裡設定的公司端點；backend/frontend 也只從原始碼 build，不會退回去 `ghcr.io` pull（本來就是要避開被公司掃描器擋下來的 image）。Postgres 兩種模式都一樣，永遠自架、沒有退回機制。完整決策流程、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
+**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗；`./deploy.sh` 會自動幫你做這步）。在家用 `./deploy.sh`（不加參數）——backend/frontend 從本機原始碼 build，Camunda/DataHub 各自嘗試 pull image，抓得到就自架、抓不到才退回 `backend/.env` 裡的端點。**到公司用 `./deploy.sh --office`**——這個模式下 Camunda/DataHub 完全不會嘗試自架（連 pull 都不會做），一律直接用 `backend/.env` 裡設定的公司端點；backend/frontend 也只從原始碼 build，不會退回去 `ghcr.io` pull（本來就是要避開被公司掃描器擋下來的 image）。MariaDB 兩種模式都一樣，永遠自架、沒有退回機制。完整決策流程、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
 
 ## 到公司後怎麼做（照順序，一步一步）
 
@@ -47,9 +49,9 @@ Camunda), and what business logic / UI direction to carry over.
 ```bash
 ./deploy.sh --office
 ```
-`--office` 模式（2026-08-26 起）：Camunda/DataHub **完全不會嘗試自架**（連 pull 都不會做），一律直接用 `backend/.env` 裡設定的端點——所以 Step 3 之前記得先確認 `backend/.env` 的 `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` 已經指到公司真實的服務，不然會一直是 graceful fallback（Camunda 顯示 "Skipped"、DataHub 退回內建假目錄）。backend/frontend 只從本機原始碼 build，不會退回去 `ghcr.io` pull（這就是重點：不再依賴任何會被公司掃描器擋下來的 image）。Postgres 不受 `--office` 影響，兩種模式都一樣自架、沒有退回機制，抓不到會直接報錯。跑完會印出每個服務最後是「自架」還是「退回 config」。
+`--office` 模式（2026-08-26 起）：Camunda/DataHub **完全不會嘗試自架**（連 pull 都不會做），一律直接用 `backend/.env` 裡設定的端點——所以 Step 3 之前記得先確認 `backend/.env` 的 `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` 已經指到公司真實的服務，不然會一直是 graceful fallback（Camunda 顯示 "Skipped"、DataHub 退回內建假目錄）。backend/frontend 只從本機原始碼 build，不會退回去 `ghcr.io` pull（這就是重點：不再依賴任何會被公司掃描器擋下來的 image）。MariaDB 不受 `--office` 影響，兩種模式都一樣自架、沒有退回機制，抓不到會直接報錯。跑完會印出每個服務最後是「自架」還是「退回 config」。
 
-如果 `./deploy.sh --office` 整個失敗（連 Postgres 都抓不到，或 backend/frontend build 失敗），先不要繼續往下試，跳到最下面「有問題怎麼辦」那段，把診斷結果帶回來，我們再一起想下一步。
+如果 `./deploy.sh --office` 整個失敗（連 MariaDB 都抓不到，或 backend/frontend build 失敗），先不要繼續往下試，跳到最下面「有問題怎麼辦」那段，把診斷結果帶回來，我們再一起想下一步。
 
 **Step 2 — 確認真的跑起來了**
 ```bash
@@ -89,8 +91,9 @@ pytest backend/evals/ -v -s
 
 ## Status: full PoC UI ported, verified end-to-end
 
-- Backend (FastAPI + PostgreSQL) tested end-to-end against a real
-  Postgres: catalog fetch, SSE chat streaming (greeting fast-path,
+- Backend (FastAPI + MariaDB, switched from Postgres 2026-08-27 - see
+  HANDOFF.md) tested end-to-end against a real database: catalog fetch,
+  SSE chat streaming (greeting fast-path,
   zero-hallucination guard, local-keyword fallback when the LLM endpoint
   isn't reachable instead of just erroring out), ticket create/list, and
   the full approve/reject state machine (including SLA cycle-time
@@ -126,7 +129,7 @@ pytest backend/evals/ -v -s
   fallback either. Adopted after the office's vulnerability scanner
   blocked the mirrored Camunda/DataHub images and further version bumps
   couldn't get the CVE count to zero (see HANDOFF.md's "Vulnerability
-  remediation round" and "Office mode" sections). Postgres has no
+  remediation round" and "Office mode" sections). MariaDB has no
   fallback in either mode - self-hosting it is the actual plan, a
   failed pull is a hard error. See "Getting an image onto the
   air-gapped network" below.
@@ -156,7 +159,7 @@ pytest backend/evals/ -v -s
   instead for offline, human-reviewed triage
   (`backend/scripts/review_unmatched_queries.py`) — see HANDOFF.md.
 - **All 9 images mirror from GHCR** (`backend`, `frontend`, `camunda`,
-  `postgres`, and DataHub's 7) — confirmed the office network can reach
+  `mariadb`, and DataHub's 7) — confirmed the office network can reach
   `ghcr.io` even though it can't reach Docker Hub or the company's own
   Harbor/Nexus (neither has a Camunda image). See "Getting an image onto
   the air-gapped network" below.
@@ -170,7 +173,7 @@ flowchart LR
     subgraph compose["docker-compose.yml (always)"]
         FE["frontend\nReact + Vite, served by nginx\n:8090"]
         BE["backend\nFastAPI\n:8000"]
-        PG[("postgres:16\n:5432\nno fallback - self-hosted always")]
+        PG[("mariadb:11.4\n:3307\nno fallback - self-hosted always")]
     end
 
     subgraph camoverlay["docker-compose.camunda.yml\n(included if image pullable)"]
@@ -278,7 +281,7 @@ flowchart TD
     A["docker compose build\nbackend/frontend"] -->|works| Z1["use the freshly-built images"]
     A -->|fails| F1["hard error in --office mode -\nno GHCR pull fallback, fix build\naccess (e.g. an internal mirror)"]
     B["--office mode:\nCamunda/DataHub"] --> Z2["never self-hosted - always\nbackend/.env's CAMUNDA_BASE_URL /\nDATAHUB_API_URL, point these at\nthe company's real instances"]
-    E["docker compose pull postgres"] -->|fails| F2["hard error - no fallback,\nfix connectivity to ghcr.io"]
+    E["docker compose pull mariadb"] -->|fails| F2["hard error - no fallback,\nfix connectivity to ghcr.io"]
 ```
 
 **Backend/frontend**: `--office` mode builds from local source only
@@ -305,14 +308,14 @@ app's built-in mock catalog. (Local dev, no `--office` flag, still
 tries to self-host both via image first - useful for testing the agent
 without company network access.)
 
-**Postgres**: no fallback in either mode - `deploy.sh` treats a failed
-pull as a hard error, since self-hosting Postgres is the actual plan
+**MariaDB**: no fallback in either mode - `deploy.sh` treats a failed
+pull as a hard error, since self-hosting it is the actual plan
 here (the company's own Postgres is an unwieldy HA setup, not something
 worth connecting to instead - see HANDOFF.md), not something to
 gracefully degrade out of.
 
-- **GHCR path (`ghcr.io`)** is still how `postgres`, `backend`, and
-  `frontend` images get to the office (`ghcr.io/mail2yee/postgres:16-alpine`,
+- **GHCR path (`ghcr.io`)** is still how `mariadb`, `backend`, and
+  `frontend` images get to the office (`ghcr.io/mail2yee/mariadb:11.4`,
   and `backend`/`frontend` at home via `docker compose build` + `push`,
   though `--office` itself never pulls the latter two - only local dev
   does, as a fallback). `camunda` and DataHub's 7 images are also still
@@ -423,7 +426,7 @@ cp backend/.env.example backend/.env   # required - docker-compose.yml
                                         # references this file directly; it
                                         # won't even start without it existing
 cp .env.example .env                   # optional - only needed to override
-                                        # the default Postgres password
+                                        # the default MariaDB password
 ```
 `backend/.env`'s defaults (mock LLM endpoint) are enough to start the app
 and see it fall back gracefully — edit `LLM_BASE_URL`/`LLM_MODEL`/
@@ -446,7 +449,7 @@ Camunda and DataHub are both self-hosted by default (as part of this
 same command) - `deploy.sh` only skips one if its image can't be pulled,
 falling back to whatever `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` is set to
 in `backend/.env` instead (see HANDOFF.md's "Self-hosted images with a
-config fallback"). Postgres has no such fallback - self-hosting it is
+config fallback"). MariaDB has no such fallback - self-hosting it is
 the actual plan. The full ticket/approval/Camunda-task-completion loop
 and a real DataHub-backed catalog both work with zero extra setup beyond
 this one command. Equivalent to (and this is what `deploy.sh` actually
@@ -457,7 +460,7 @@ docker compose -f docker-compose.yml -f docker-compose.camunda.yml -f datahub/do
 
 - Frontend: http://localhost:8090
 - Backend: http://localhost:8000 (docs at `/docs`)
-- Postgres: localhost:5432 (user/pass/db: `dgo`/`dgo`/`dgo`)
+- MariaDB: localhost:3307 (user/pass/db: `dgo`/`dgo`/`dgo`)
 - Camunda: http://localhost:8082/engine-rest (REST API, no UI)
 - DataHub: GMS http://localhost:18080, UI http://localhost:19002
   (user/pass: `datahub`/`datahub`) - seed it with sample data via
@@ -477,12 +480,12 @@ wren/project/                WrenAI semantic model (MDL) - see app/integrations/
 camunda/data-gov-approval.bpmn  BPMN process this app deploys to Camunda itself on startup
 datahub/seed_catalog.py     seeds sample dataset entities into a local DataHub instance
 scripts/setup-datahub.sh    stands up + seeds a local DataHub instance (own docker quickstart stack)
-scripts/mirror-image-to-ghcr.sh  retags + pushes a public third-party image (Camunda, Postgres) to this repo's GHCR namespace
+scripts/mirror-image-to-ghcr.sh  retags + pushes a public third-party image (Camunda, MariaDB) to this repo's GHCR namespace
 backend/scripts/review_unmatched_queries.py  offline, human-reviewed triage of chat queries that matched nothing
 k8s/                        placeholder for future Kubernetes manifests (not needed yet — Docker is fine for now)
 scripts/collect-debug-log.sh  one-command diagnostics collector, see TESTING_LOG.md
 debug-logs/                 output of the script above, committed for review from home
-docker-compose.yml          local/on-prem multi-container dev setup (postgres, camunda, backend, frontend)
+docker-compose.yml          local/on-prem multi-container dev setup (mariadb, camunda, backend, frontend)
 TESTING_LOG.md               office <-> home handoff log (no Claude Code on-site)
 HANDOFF.md                  why this repo exists, what to port from the GCP PoC, current constraints
 ```

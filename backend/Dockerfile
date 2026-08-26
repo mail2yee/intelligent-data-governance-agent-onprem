@@ -18,6 +18,14 @@ WORKDIR /app
 # sibling agent_mem0_poc repo's Dockerfile for a working example) - it'll
 # compile wren-core-py from source instead, which needs crates.io
 # reachable during the build, not just PyPI.
+# mysqlclient (pulled in by wrenai[mysql], for WrenAI's own MariaDB
+# connector - see wren/project/connection_profile.json) ships no Linux
+# wheel on PyPI, only an sdist - needs MariaDB/MySQL client headers and a
+# C compiler to build. default-libmysqlclient-dev resolves to
+# MariaDB's client library on this Debian base.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config default-libmysqlclient-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/app ./app

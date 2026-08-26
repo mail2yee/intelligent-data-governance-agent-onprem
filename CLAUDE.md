@@ -16,7 +16,11 @@ things left off.
   different sibling repo, `agent_mem0_poc`, has an already-proven
   reference implementation of WrenAI's current (2026) architecture -
   worth checking before assuming anything about how WrenAI works.
-- Stack: FastAPI + PostgreSQL backend, React + Vite frontend (visual
+- Stack: FastAPI + MariaDB backend (switched from Postgres 2026-08-27 -
+  see HANDOFF.md's "DB engine switched to MariaDB" section; not
+  vulnerability-driven, MariaDB scanned marginally worse - purely about
+  self-hosting without touching the company's Postgres HA cluster),
+  React + Vite frontend (visual
   style aligned to the company's internal TADiS design system, see
   HANDOFF.md's UI/UX section), real Camunda **7.22** (REST API,
   `/engine-rest` - corrected 2026-07-29 from an earlier, wrong Camunda
@@ -73,17 +77,16 @@ things left off.
   (`scripts/mirror-image-to-ghcr.sh`, all images public, confirmed
   `amd64/linux` - a real platform-mismatch bug hit and fixed twice, see
   HANDOFF.md) is still how **local dev** self-hosts everything
-  (`postgres`, `camunda`, DataHub's 7 images, plus a fallback path for
+  (`mariadb`, `camunda`, DataHub's 7 images, plus a fallback path for
   backend/frontend if a local build fails) - just not what the office
   does anymore. `./deploy.sh --office` builds backend/frontend from
   source only (hard error if that fails, no GHCR fallback) and never
   touches Camunda/DataHub images at all (config-only, see above). Only
-  `postgres` still reaches the office via `ghcr.io` in both modes -
+  `mariadb` still reaches the office via `ghcr.io` in both modes -
   self-hosting it is the actual plan, not a dev-environment shortcut
-  (the company's own Postgres is an unwieldy HA setup - MariaDB was
-  considered as an alternative self-hosted engine and rejected, its
-  image scanned with the same critical count and *worse* high count
-  than `postgres:16-alpine`, see HANDOFF.md).
+  (the company's own Postgres is an unwieldy HA setup - MariaDB doesn't
+  score any better on vulnerabilities than Postgres did, that was never
+  the point, see HANDOFF.md's "DB engine switched to MariaDB" section).
 - CI: intentionally NOT GitHub Actions — company uses internal Azure
   DevOps for CI/CD. Don't build `.github/workflows/`.
 - Workflow: user develops with Claude Code at home, pulls via git (or a

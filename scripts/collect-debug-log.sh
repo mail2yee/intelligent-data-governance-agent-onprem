@@ -51,14 +51,14 @@ OUTFILE="debug-logs/${TIMESTAMP}.log"
 } > "$OUTFILE" 2>&1
 
 # Best-effort secret redaction - docker compose config in particular prints
-# resolved env values, which can include POSTGRES_PASSWORD / API keys / PATs.
+# resolved env values, which can include MARIADB_PASSWORD / API keys / PATs.
 # Review the output yourself too; this is a safety net, not a guarantee.
 sed -i.bak -E \
   -e 's/(PASSWORD[A-Z_]*=)[^[:space:]]+/\1REDACTED/gi' \
   -e 's/(TOKEN[A-Z_]*=)[^[:space:]]+/\1REDACTED/gi' \
   -e 's/(SECRET[A-Z_]*=)[^[:space:]]+/\1REDACTED/gi' \
   -e 's/(API_KEY[A-Z_]*=)[^[:space:]]+/\1REDACTED/gi' \
-  -e 's|(postgresql\+asyncpg://[^:]+:)[^@]+(@)|\1REDACTED\2|gi' \
+  -e 's|(mysql\+asyncmy://[^:]+:)[^@]+(@)|\1REDACTED\2|gi' \
   "$OUTFILE"
 rm -f "${OUTFILE}.bak"
 

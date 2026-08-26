@@ -1,7 +1,7 @@
 # Optional overlay: self-hosted Camunda 7.22, included alongside the
 # root docker-compose.yml only when its image is actually pullable - see
 # deploy.sh. Split out from docker-compose.yml (2026-08-05) so the core
-# stack (postgres/backend/frontend) can still come up without Camunda,
+# stack (mariadb/backend/frontend) can still come up without Camunda,
 # falling back to whatever CAMUNDA_BASE_URL is already set in
 # backend/.env (presumably the company's real instance) instead of
 # hard-failing on a missing dependency. See HANDOFF.md's "Self-hosted
@@ -21,11 +21,14 @@
 #
 # Mirrored to GHCR (2026-08-04) - the company's internal registries
 # (Harbor, Nexus) don't have a Camunda image, but ghcr.io itself is
-# reachable from the office - see scripts/mirror-image-to-ghcr.sh. Unlike
-# Postgres, there's no company-provided Camunda service to prefer instead
-# when the image *is* available - self-hosting this one is the actual
-# long-term plan, not just a dev convenience; the config fallback here is
-# purely for when the image can't be pulled at all.
+# reachable from the office - see scripts/mirror-image-to-ghcr.sh.
+#
+# Office deployments (2026-08-26) never use this overlay at all anymore -
+# `deploy.sh --office` always falls back to backend/.env's
+# CAMUNDA_BASE_URL, config-only, no image pull attempted (see HANDOFF.md's
+# "Office mode" section). This overlay remains local-dev-only: convenient
+# for testing the ticket -> approve -> Camunda task-completion loop
+# without company network access.
 services:
   camunda:
     image: ghcr.io/mail2yee/camunda-bpm-platform:7.22.0

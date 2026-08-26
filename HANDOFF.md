@@ -78,8 +78,8 @@ decisions across manually; do not try to build a compatibility layer.
 | LLM | Gemini via `google-genai`, streamed via SSE | On-prem model, assumed **OpenAI-compatible** `POST /v1/chat/completions` with `stream: true` (see `backend/app/integrations/llm_client.py`) — confirmed this shape works against a real local Ollama (2026-07-28), but the **company's actual gateway is still unconfirmed** (a different endpoint) — adjust `llm_client.py` if its real shape differs |
 | Workflow engine | Camunda SaaS (`login.cloud.camunda.io`), fire-and-forget, not really wired to approval state | **Camunda 7 (self-managed, REST API)** — corrected 2026-07-29 from an earlier, wrong Camunda 8/Zeebe assumption; the company's real instance is **7.22**. Real REST client (`backend/app/integrations/camunda_client.py`), a verified BPMN process (`camunda/data-gov-approval.bpmn`), and a working local self-hosted instance (`docker-compose.yml`'s `camunda` service) — see "Camunda + DataHub: local hosting and the external-service switch" below for the full loop, including the owner-approves-in-app -> Camunda task completes mechanism. |
 | Data catalog | Dataplex (GCP) | DataHub GraphQL API, real client wired in (see `backend/app/integrations/datahub_client.py`) — assumes `maturity_level`/`data_quality_score`/etc. live as DataHub *customProperties* (confirmed assumption with the user) and derives each product's `id` by slugifying its DataHub display name. Falls back to the same hardcoded mock catalog as the GCP PoC if DataHub is unreachable or returns nothing. Local self-hosting via `scripts/setup-datahub.sh` — see below. |
-| Ticket storage | Firestore | PostgreSQL (see `backend/app/db.py`) |
-| Semantic layer (zero-hallucination data-subject matching) | N/A | **Decided and built (2026-07-27):** WrenAI, embedded as a Python library (`wrenai[postgres]`) inside the backend process - see `backend/app/integrations/wrenai_client.py` and `wren/project/`. Scope is deliberately narrow: verify *which catalog data subject* matches a chat query, not full NL -> SQL -> real-data-answer execution (that stays out of scope, see below) |
+| Ticket storage | Firestore | MariaDB (see `backend/app/db.py`) - switched from Postgres 2026-08-27, see "DB engine switched to MariaDB" below |
+| Semantic layer (zero-hallucination data-subject matching) | N/A | **Decided and built (2026-07-27):** WrenAI, embedded as a Python library (`wrenai[mysql]` as of the MariaDB switch, was `wrenai[postgres]`) inside the backend process - see `backend/app/integrations/wrenai_client.py` and `wren/project/`. Scope is deliberately narrow: verify *which catalog data subject* matches a chat query, not full NL -> SQL -> real-data-answer execution (that stays out of scope, see below) |
 | Frontend | Single Python string containing HTML/CSS/JS, served by FastAPI | React (Vite) SPA, calling the FastAPI backend as a separate JSON/SSE API |
 
 ## Business logic and data model to preserve
@@ -87,7 +87,7 @@ decisions across manually; do not try to build a compatibility layer.
 This is the part that's actually reusable know-how, even though the code
 isn't shared. Port the *behavior*, not the files.
 
-**Ticket / approval model** (was Firestore documents, now Postgres rows):
+**Ticket / approval model** (was Firestore documents, now MariaDB rows):
 ```
 ticket: { id, products[], objective, purpose, status, created_at, owners[] }
 approval: { ticket_id, owner_email, decision (PENDING/Approve/Reject),
@@ -969,17 +969,18 @@ point this at the company's actual Camunda/DataHub addresses instead.
 `./deploy.sh` (no flag) was re-run afterward and confirmed unchanged -
 still self-hosts everything it can via image.
 
-Considered and rejected switching the app's own Postgres to MariaDB
-(user's suggestion, motivated by wanting to keep self-hosting the DB
-without touching the company's Postgres HA cluster - not actually a
-vulnerability-driven idea, since `backend/app/db.py` uses no
-Postgres-specific types and porting would have been straightforward if
-it *had* helped). Scanned `mariadb:11.4`/`11.8`/`12.3` for real: all
-three came back identical at 1 critical/**21** high - same critical
-count as `postgres:16-alpine`, worse on high. No reason to switch;
-Postgres already achieves the actual goal (self-hosted, not the
-company's HA cluster) and has the best CVE profile of anything in this
-stack already.
+Initially considered and set aside switching the app's own Postgres to
+MariaDB (user's suggestion, motivated by wanting to keep self-hosting
+the DB without touching the company's Postgres HA cluster - not
+actually a vulnerability-driven idea). Scanned `mariadb:11.4`/`11.8`/`12.3`
+for real: all three came back identical at 1 critical/**21** high -
+same critical count as `postgres:16-alpine`, worse on high, so no
+CVE-count reason to switch. **Revisited and actually done the next day
+anyway** (2026-08-27) - the user's actual motivation was never CVE
+count, it was "self-host something I control, don't touch the
+company's HA cluster," and that reasoning didn't change just because
+MariaDB's numbers weren't better. See the "DB engine switched to
+MariaDB" section below for the real migration.
 
 `backend/.env.example`'s `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` comments
 (and the real `backend/.env`'s `DATAHUB_API_URL`, which had a stale
@@ -989,6 +990,101 @@ overridden automatically when the matching overlay is self-hosted,
 `localhost:8082`/`localhost:18080` when running the backend outside
 Docker against a self-hosted overlay, or the company's real endpoint
 when running `--office`.
+
+## DB engine switched to MariaDB (2026-08-27)
+
+Postgres is out, MariaDB is in - `mariadb:11.4` (the LTS track, same one
+scanned in the "Vulnerability remediation round" section above). Not a
+CVE-driven change (MariaDB scanned marginally worse, 1 critical/21 high
+vs Postgres's 1 critical/14), and not a functional-gap driven one
+either - purely because the user wants full control of the engine
+without connecting to the company's Postgres HA cluster, and it doesn't
+matter to that goal which self-hosted engine it is.
+
+**Everything below was actually tested against a live container, not
+just edited and assumed to work** - ticket creation, WrenAI's own SQL
+execution against the new engine, `pytest`, `ruff`, `mypy`, all green.
+
+- **`backend/app/db.py`: every `String` column needed an explicit
+  length.** Postgres's `VARCHAR` (no length) is unlimited; MySQL/MariaDB
+  requires a length always, and rejects a bare `VARCHAR` at `CREATE
+  TABLE` time. Confirmed this the direct way (a bare `String` column
+  produces invalid DDL on the mysql dialect) rather than assuming
+  SQLAlchemy would paper over it. Short/categorical columns got explicit
+  `String(N)`; free-form text columns (`objective`, `purpose`,
+  `description`, `reason`, `message`, `search_text`, `tables_joined`)
+  became `Text` instead, which needs no length on either dialect and
+  keeps the same "no practical size limit" behavior Postgres's bare
+  `String` had.
+- **Driver: `asyncmy`, not `aiomysql`** - `mysql+asyncmy://` in
+  `DATABASE_URL`, replacing `asyncpg`/`postgresql+asyncpg://`. No other
+  app code changes needed - `backend/app/db.py`'s `.ilike()` calls
+  (`chat.py`'s keyword search) are SQLAlchemy ORM method calls, not raw
+  `ILIKE` SQL, so they already compile correctly to MySQL's
+  case-insensitive-`LOWER()`-wrapped `LIKE` automatically. Confirmed no
+  other Postgres-specific SQL exists anywhere in `backend/app/` (no raw
+  `text()` queries, no dialect-specific column types) before assuming
+  this port would be clean - and `backend/tests/conftest.py` already
+  runs against SQLite, not Postgres, precisely because "nothing here
+  relies on Postgres-specific SQL" was already a documented invariant,
+  which held up.
+- **WrenAI needed its own separate fix**: `wren/project/connection_profile.json`'s
+  `datasource` changed `postgres` -> `mysql` (confirmed `mysql` is a
+  supported WrenAI datasource via `wren.model.field_registry.DATASOURCE_MODELS`
+  - MariaDB is wire-compatible with MySQL, so this works without a
+  dedicated MariaDB datasource type). Two non-obvious fixes needed here,
+  found only by actually running `wren profile add`/`wren context build`
+  against the real container, not by reading docs:
+  - `wrenai[postgres]` -> `wrenai[mysql]` in `backend/requirements.txt`
+    (pulls in `mysqlclient`, the driver WrenAI's own MySQL connector
+    uses internally - separate from `asyncmy`, which is only for this
+    app's own SQLAlchemy queries). `mysqlclient` ships no Linux wheel on
+    PyPI, sdist-only - `backend/Dockerfile` now installs
+    `default-libmysqlclient-dev`/`build-essential`/`pkg-config` via apt
+    before `pip install` or the build fails. Confirmed it compiles clean
+    against Debian's MariaDB client headers.
+  - `ssl_mode: "disabled"` added to `connection_profile.json` - the
+    `MySqlConnectionInfo` model defaults `ssl_mode` to `"ENABLED"`,
+    which fails outright against a self-hosted MariaDB with no TLS
+    configured. Confirmed by first hitting the failure, not by reading
+    the connector source proactively.
+  - `wren_project.yml`'s `schema: public` -> `schema: dgo` (and the
+    matching `table_reference.schema` in
+    `wren/project/models/data_products/metadata.yml`) - MySQL/MariaDB
+    has no separate schema namespace the way Postgres does; "schema" and
+    "database" are the same thing, so this now matches
+    `MARIADB_DATABASE`/`connection_profile.json`'s `database` field
+    instead of Postgres's `public` convention.
+- **Host port 3306 was already taken** on this dev machine by the
+  sibling `agent_mem0_poc` repo's own unrelated MySQL container (found
+  by the container failing to start with "port is already allocated,"
+  not anticipated in advance) - remapped to host port **3307**
+  (`docker-compose.yml`'s `ports:`), container-to-container traffic
+  inside the compose network is unaffected (still talks to the
+  container's internal 3306). `backend/.env`/`.env.example`'s
+  outside-Docker `DATABASE_URL` default and `config.py`'s fallback both
+  updated to match.
+- **Env var renaming**: `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`
+  -> `MARIADB_USER`/`MARIADB_PASSWORD`/`MARIADB_DATABASE` everywhere
+  (`docker-compose.yml`, root `.env.example`, `backend/entrypoint.sh`'s
+  comment) - these feed both `DATABASE_URL` construction and
+  `wren/project/connection_profile.json`'s `${VAR}` substitution at
+  container startup, so keeping the old Postgres-flavored names would
+  have been actively misleading, not just cosmetically wrong.
+- **Verified for real, end-to-end**: brought up a real `mariadb:11.4`
+  container (mirrored to `ghcr.io/mail2yee/mariadb:11.4` - same
+  pull-by-digest process as every other image, not yet re-verified
+  anonymous-pull-public since this was tested with a locally-tagged
+  image first, confirm before relying on it from the office), confirmed
+  `SHOW TABLES`/`DESCRIBE tickets` produced exactly the expected
+  MariaDB-native types (`varchar(64)`, `text`, `longtext` for the JSON
+  columns), created a real ticket end-to-end (Camunda trigger included),
+  and directly exercised `wrenai_client.sync_catalog()` +
+  `resolve_matches()` in the running container - confirmed rows actually
+  land in `data_products` and a real SQL query through WrenAI's engine
+  (not a mocked path) returns correct results. `pytest`/`ruff`/`mypy`
+  all still pass unchanged (tests use SQLite, never touched Postgres or
+  MariaDB either way).
 
 ## Engineering standards / tests — IN PROGRESS as of this commit
 

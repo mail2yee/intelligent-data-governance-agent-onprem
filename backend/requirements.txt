@@ -1,9 +1,9 @@
 fastapi
 uvicorn[standard]
 sqlalchemy[asyncio]
-asyncpg
+asyncmy
 httpx
 pydantic-settings
 python-dotenv
-wrenai[postgres]
+wrenai[mysql]
 opencc-python-reimplemented

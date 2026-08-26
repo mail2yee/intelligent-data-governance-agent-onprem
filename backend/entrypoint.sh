@@ -1,11 +1,13 @@
 #!/bin/sh
 set -e
 
-# POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB in wren_project/connection_profile.json
-# are literal ${VAR} strings - wren resolves them from the environment at
-# connection time, not when this profile is registered, so no manual
-# substitution is needed here (confirmed against the sibling
-# agent_mem0_poc repo's identical setup).
+# MARIADB_USER/MARIADB_PASSWORD/MARIADB_DATABASE in
+# wren_project/connection_profile.json are literal ${VAR} strings - wren
+# resolves them from the environment at connection time, not when this
+# profile is registered, so no manual substitution is needed here
+# (confirmed against the sibling agent_mem0_poc repo's identical setup,
+# which used the same pattern for Postgres before this repo switched to
+# MariaDB).
 wren profile add dgo-catalog \
   --from-file /app/wren_project/connection_profile.json \
   --activate \

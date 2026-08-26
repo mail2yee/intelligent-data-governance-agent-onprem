@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -14,11 +14,15 @@ class Base(DeclarativeBase):
 class Ticket(Base):
     __tablename__ = "tickets"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # String(N) everywhere below, not bare String - MariaDB/MySQL's
+    # VARCHAR requires an explicit length (Postgres's doesn't), so a bare
+    # String compiles to invalid DDL on this dialect. Free-form text
+    # fields use Text instead, which needs no length on either dialect.
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     products: Mapped[list] = mapped_column(JSON)
-    objective: Mapped[str] = mapped_column(String)
-    purpose: Mapped[str] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String, default="PENDING_APPROVAL")
+    objective: Mapped[str] = mapped_column(Text)
+    purpose: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING_APPROVAL")
     owners: Mapped[list] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     # Set from integrations.camunda_client.start_approval_process()'s
@@ -27,7 +31,7 @@ class Ticket(Base):
     # ticket) - needed later to find and complete the right owner's task
     # in camunda_client.complete_approval_task() (see main.py's
     # submit_approval).
-    camunda_process_instance_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    camunda_process_instance_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     approvals: Mapped[list["Approval"]] = relationship(back_populates="ticket", cascade="all, delete-orphan")
 
@@ -36,10 +40,10 @@ class Approval(Base):
     __tablename__ = "approvals"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    ticket_id: Mapped[str] = mapped_column(ForeignKey("tickets.id"))
-    owner_email: Mapped[str] = mapped_column(String)
-    decision: Mapped[str] = mapped_column(String, default="PENDING")
-    reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    ticket_id: Mapped[str] = mapped_column(String(64), ForeignKey("tickets.id"))
+    owner_email: Mapped[str] = mapped_column(String(255))
+    decision: Mapped[str] = mapped_column(String(32), default="PENDING")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cycle_time_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -48,7 +52,7 @@ class Approval(Base):
 
 
 class DataProduct(Base):
-    """Mirror of the DataHub catalog, kept in our own Postgres so WrenAI's
+    """Mirror of the DataHub catalog, kept in our own database so WrenAI's
     governed engine has a real table to validate/execute agent-written SQL
     against (see integrations/wrenai_client.py) - WrenAI needs a live
     connected data source, it can't validate against a Python dict.
@@ -58,18 +62,18 @@ class DataProduct(Base):
 
     __tablename__ = "data_products"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    name: Mapped[str] = mapped_column(String)
-    description: Mapped[str] = mapped_column(String)
-    owner: Mapped[str] = mapped_column(String)
-    maturity_level: Mapped[str] = mapped_column(String)
-    data_quality_score: Mapped[str] = mapped_column(String)
-    frequency: Mapped[str] = mapped_column(String)
-    tables_joined: Mapped[str] = mapped_column(String)
-    db_type: Mapped[str] = mapped_column(String)
-    db_host: Mapped[str] = mapped_column(String)
-    db_port: Mapped[str] = mapped_column(String)
-    db_schema: Mapped[str] = mapped_column(String)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text)
+    owner: Mapped[str] = mapped_column(String(255))
+    maturity_level: Mapped[str] = mapped_column(String(64))
+    data_quality_score: Mapped[str] = mapped_column(String(64))
+    frequency: Mapped[str] = mapped_column(String(64))
+    tables_joined: Mapped[str] = mapped_column(Text)
+    db_type: Mapped[str] = mapped_column(String(64))
+    db_host: Mapped[str] = mapped_column(String(255))
+    db_port: Mapped[str] = mapped_column(String(16))
+    db_schema: Mapped[str] = mapped_column(String(255))
     # Denormalized name+description+tables_joined, stored in both
     # Traditional and Simplified Chinese (see wrenai_client._search_text) -
     # the LLM's SQL-generation step matches keywords against this single
@@ -77,7 +81,7 @@ class DataProduct(Base):
     # keyword in either script still hits (confirmed: small local LLMs
     # sometimes emit Simplified keywords for a Traditional-Chinese catalog,
     # and plain ILIKE does no script folding).
-    search_text: Mapped[str] = mapped_column(String)
+    search_text: Mapped[str] = mapped_column(Text)
 
 
 class UnmatchedQuery(Base):
@@ -100,8 +104,8 @@ class UnmatchedQuery(Base):
     __tablename__ = "unmatched_queries"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    message: Mapped[str] = mapped_column(String)
-    lang: Mapped[str] = mapped_column(String)
+    message: Mapped[str] = mapped_column(Text)
+    lang: Mapped[str] = mapped_column(String(8))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     # Set by scripts/review_unmatched_queries.py once a row has been
     # surfaced to a human for review - not "confirmed useful", just
