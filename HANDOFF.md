@@ -918,6 +918,78 @@ before - confirmed `amd64/linux`, confirmed anonymous pull works (all
 already public since they're new tags under already-public
 repositories, no visibility flip needed this time).
 
+## Office mode: images abandoned for Camunda/DataHub (2026-08-26)
+
+The unresolved question from the section above got resolved: rather
+than pursue an IT/security exception for Camunda's un-fixable 5
+critical/32 high and DataHub's ~280 combined high, the user decided the
+image path for Camunda/DataHub is simply not worth it going forward.
+**New direction**: at the office, Camunda and DataHub are never
+self-hosted at all - the app always talks to the company's own
+already-approved instances via `CAMUNDA_BASE_URL`/`DATAHUB_API_URL`.
+Local dev keeps self-hosting both via image, purely for convenience
+testing the agent without needing company network access.
+
+Also folded into this same decision: backend/frontend stop shipping as
+GHCR images for office use too - the office now always does a plain
+`git pull` + local `docker build`, since the whole point was to stop
+depending on any GHCR-hosted image the company's scanner might flag
+(this repo's own backend/frontend images were never actually scanned
+in the "Vulnerability remediation round" above, but there's no reason
+to assume they're exempt from the same policy).
+
+**`deploy.sh` now takes a `--office` flag** (default with no flag:
+unchanged local-dev behavior with the image/config fallback logic from
+the "Self-hosted images" section above):
+- Camunda/DataHub: no `docker compose pull` is even attempted - the
+  overlay files (`docker-compose.camunda.yml`,
+  `datahub/docker-compose.datahub.yml`) are never referenced, full
+  stop. Whatever's in `backend/.env` is what the app uses.
+- Backend/frontend: build from source only, **no GHCR pull fallback**
+  (a failed local build is now a hard error in this mode, not a silent
+  pull of a possibly-stale published image - the office not having
+  build access at all would be a real problem to fix, not something to
+  paper over).
+- Postgres: unchanged in both modes - still always self-hosted via
+  image, no fallback. This was never part of the vulnerability
+  complaint (`postgres:16-alpine` already scores best of anything in
+  the stack, 1 critical/14 high) and the company's own Postgres is
+  still the unwieldy HA setup that made self-hosting the point in the
+  first place.
+
+Tested both paths for real: `./deploy.sh --office` correctly skipped
+both overlays (no pull attempts logged), built backend/frontend from
+local source, brought up postgres+backend+frontend only, and a test
+ticket against it correctly returned a graceful `"Skipped (Camunda
+unavailable: All connection attempts failed)"` status - expected, since
+the test `backend/.env` still points `CAMUNDA_BASE_URL` at
+`localhost:8082` (meant for outside-Docker local runs), which a
+containerized backend can't reach; a real office `backend/.env` would
+point this at the company's actual Camunda/DataHub addresses instead.
+`./deploy.sh` (no flag) was re-run afterward and confirmed unchanged -
+still self-hosts everything it can via image.
+
+Considered and rejected switching the app's own Postgres to MariaDB
+(user's suggestion, motivated by wanting to keep self-hosting the DB
+without touching the company's Postgres HA cluster - not actually a
+vulnerability-driven idea, since `backend/app/db.py` uses no
+Postgres-specific types and porting would have been straightforward if
+it *had* helped). Scanned `mariadb:11.4`/`11.8`/`12.3` for real: all
+three came back identical at 1 critical/**21** high - same critical
+count as `postgres:16-alpine`, worse on high. No reason to switch;
+Postgres already achieves the actual goal (self-hosted, not the
+company's HA cluster) and has the best CVE profile of anything in this
+stack already.
+
+`backend/.env.example`'s `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` comments
+(and the real `backend/.env`'s `DATAHUB_API_URL`, which had a stale
+`:8080` port left over from before DataHub's GMS moved to `:18080`)
+were rewritten to explain the three-way meaning these values now have:
+overridden automatically when the matching overlay is self-hosted,
+`localhost:8082`/`localhost:18080` when running the backend outside
+Docker against a self-hosted overlay, or the company's real endpoint
+when running `--office`.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

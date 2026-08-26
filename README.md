@@ -20,11 +20,13 @@ Camunda), and what business logic / UI direction to carry over.
 
 **2026-08-05 架構調整：Camunda、DataHub、Postgres 現在都是「預設自架 image，image 抓不到就退回 config 裡設定的公司真實服務」**（Postgres 除外，一律自架，沒有退回機制）。DataHub 從原本跟 sibling repo 共用的獨立 `datahub docker quickstart` stack，改成直接併進這個 repo 自己的 `docker-compose.yml`（`datahub/docker-compose.datahub.yml`，7 個 container：GMS、前端、MySQL、Kafka、OpenSearch、Actions、一次性 init job）。新增 **`./deploy.sh`** 作為一鍵部署入口——會依序嘗試 pull 每個 image，抓得到就自架、抓不到就跳過並讓 app 退回用 `backend/.env` 裡已經設定的公司端點。全部 9 個 image（backend、frontend、camunda、postgres、加上 DataHub 的 7 個）都走 `ghcr.io/mail2yee/...`，公司防火牆已確認連得到。細節見 `HANDOFF.md`「Self-hosted images with a config fallback」。
 
+**2026-08-26 再調整：Camunda/DataHub 的「image 路線」放棄了。** 帶去公司實測後，這些 image 全部被公司的漏洞掃描擋下來，換了幾輪更高/更新的版本（`mysql`→8.4.9、`opensearch`→2.19.6、`cp-kafka`→8.3.0，全部實測過相容性）也只能把數字壓低，壓不到零——Camunda 本身沒有更新版本可換，卡在 5 critical/32 high。與其繼續跟 CVE 數字纏鬥，公司端現在**直接不自架 Camunda/DataHub，一律用 config 接公司自己已經核准的服務**；backend/frontend 也一併不再從 `ghcr.io` pull，公司端只用 `git pull` + 現場 `docker build`。本機 dev 環境不受影響，一樣自架整套方便測試。用法：`./deploy.sh --office`。細節見 `HANDOFF.md`「Office mode」。
+
 **架構：** `docker-compose.yml` + 兩個可選的 overlay 檔案（`docker-compose.camunda.yml`、`datahub/docker-compose.datahub.yml`）——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 讀寫 `postgres`（:5432，本機自架，無退回機制），也打 `camunda`（本機自架 REST API，:8082，抓不到 image 就退回 config）、DataHub（本機自架 GMS，:18080，同樣抓不到就退回 config），對外打一個內網服務：LLM gateway。完整圖見下面「Architecture」章節。
 
 **程式碼在哪裡：** 後端邏輯全在 `backend/app/`——`main.py` 是所有 HTTP 路由、票單/簽核狀態機、`X-API-Key` 驗證，`chat.py` 是聊天助理（打招呼快速回覆、zero-hallucination 提示詞、LLM 打不通時的本地關鍵字 fallback、`keyword_search()` 一般搜尋模式），`config.py` 集中管理所有環境變數，`db.py` 是資料庫 model，`integrations/` 底下三個檔案分別對應 LLM/Camunda/DataHub 三個外部串接。前端在 `frontend/src/`——`App.jsx` 管全域狀態，`api.js` 是所有後端呼叫（含手刻的 SSE 串流解析），`i18n.js` 管中英文字串，`components/` 底下一個檔案一個 UI 元件。完整逐檔案說明見下面「Code map」章節。
 
-**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗；`./deploy.sh` 會自動幫你做這步）。接著跑 `./deploy.sh` 就好——不管在家還是在公司都用同一支腳本：backend/frontend 會先嘗試從本機原始碼 build（在家會成功；公司如果 `pip install`/`npm ci` 連不到 mirror 會失敗，這時腳本會自動改成從 `ghcr.io` pull 已經 build 好的版本），Camunda/DataHub 會嘗試 pull 對應的 image，抓不到就自動跳過、讓 app 退回 `backend/.env` 裡設定的公司端點。完整決策流程、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
+**怎麼跑起來 / 公司內網部署策略：** 第一次跑之前要先 `cp backend/.env.example backend/.env`（**必須**，`docker-compose.yml` 會直接讀這個檔案，不存在的話連啟動都會失敗；`./deploy.sh` 會自動幫你做這步）。在家用 `./deploy.sh`（不加參數）——backend/frontend 從本機原始碼 build，Camunda/DataHub 各自嘗試 pull image，抓得到就自架、抓不到才退回 `backend/.env` 裡的端點。**到公司用 `./deploy.sh --office`**——這個模式下 Camunda/DataHub 完全不會嘗試自架（連 pull 都不會做），一律直接用 `backend/.env` 裡設定的公司端點；backend/frontend 也只從原始碼 build，不會退回去 `ghcr.io` pull（本來就是要避開被公司掃描器擋下來的 image）。Postgres 兩種模式都一樣，永遠自架、沒有退回機制。完整決策流程、以及怎麼把測試結果（log）帶回家給我看，見下面「Getting an image onto the air-gapped network」跟 `TESTING_LOG.md`。
 
 ## 到公司後怎麼做（照順序，一步一步）
 
@@ -41,13 +43,13 @@ Camunda), and what business logic / UI direction to carry over.
   ```
 - **GitHub 網頁「Download ZIP」解壓縮**：不用設定 git 帳密，簡單，但拿到的資料夾沒有 `.git`——之後沒辦法 `git pull`、也沒辦法自動 push 診斷結果，要手動複製貼上回來給我。
 
-**Step 1 — 一鍵部署**
+**Step 1 — 一鍵部署（公司內網一定要加 `--office`）**
 ```bash
-./deploy.sh
+./deploy.sh --office
 ```
-這支腳本會自動處理以前 Step 1-3 的所有事：建立 `backend/.env`/`.env`（不存在就從 `.env.example` 複製）、backend/frontend 先嘗試從本機原始碼 build（測的是 base image 拉不拉得到、`pip install`/`npm ci` 走不走得到 mirror）、失敗就自動改成從 `ghcr.io` pull 已經 build 好的版本；Camunda 跟 DataHub（7 個 image）各自嘗試 pull，抓不到就自動跳過、讓 app 退回 `backend/.env` 裡設定的端點，不會卡住整個部署。跑完會印出每個服務最後是「自架」還是「退回 config」。Postgres 沒有退回機制，抓不到會直接報錯——這是設計上刻意的，不是漏做。
+`--office` 模式（2026-08-26 起）：Camunda/DataHub **完全不會嘗試自架**（連 pull 都不會做），一律直接用 `backend/.env` 裡設定的端點——所以 Step 3 之前記得先確認 `backend/.env` 的 `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` 已經指到公司真實的服務，不然會一直是 graceful fallback（Camunda 顯示 "Skipped"、DataHub 退回內建假目錄）。backend/frontend 只從本機原始碼 build，不會退回去 `ghcr.io` pull（這就是重點：不再依賴任何會被公司掃描器擋下來的 image）。Postgres 不受 `--office` 影響，兩種模式都一樣自架、沒有退回機制，抓不到會直接報錯。跑完會印出每個服務最後是「自架」還是「退回 config」。
 
-如果 `./deploy.sh` 整個失敗（連 Postgres 都抓不到），先不要繼續往下試，跳到最下面「有問題怎麼辦」那段，把診斷結果帶回來，我們再一起想下一步。
+如果 `./deploy.sh --office` 整個失敗（連 Postgres 都抓不到，或 backend/frontend build 失敗），先不要繼續往下試，跳到最下面「有問題怎麼辦」那段，把診斷結果帶回來，我們再一起想下一步。
 
 **Step 2 — 確認真的跑起來了**
 ```bash
@@ -114,13 +116,20 @@ pytest backend/evals/ -v -s
   images with a config fallback" for the full writeup, including gaps
   still explicitly deferred (approval-endpoint auth, email
   notifications, ticket deep-linking).
-- **`./deploy.sh` decides, per service, whether to self-host or fall back
-  to the company's real endpoint** (2026-08-05): tries to pull each
-  image, self-hosts it if that works, otherwise skips it and leaves
-  `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` as whatever's already in
-  `backend/.env`. Postgres has no fallback - self-hosting it is the
-  actual plan, a failed pull is a hard error. See "Getting an image onto
-  the air-gapped network" below.
+- **`./deploy.sh` has two modes** (2026-08-05, revised 2026-08-26): no
+  flag = local dev, tries to pull each of Camunda/DataHub's images,
+  self-hosts what it can pull, falls back to `backend/.env`'s
+  `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` for whatever it can't.
+  **`--office`** = Camunda/DataHub are never self-hosted at all (no
+  pull attempted, full stop) - always the company's real endpoint via
+  config; backend/frontend build from source only, no GHCR pull
+  fallback either. Adopted after the office's vulnerability scanner
+  blocked the mirrored Camunda/DataHub images and further version bumps
+  couldn't get the CVE count to zero (see HANDOFF.md's "Vulnerability
+  remediation round" and "Office mode" sections). Postgres has no
+  fallback in either mode - self-hosting it is the actual plan, a
+  failed pull is a hard error. See "Getting an image onto the
+  air-gapped network" below.
 - LLM integration assumes an OpenAI-compatible endpoint — **confirmed
   working against a real local Ollama** (currently `qwen3:14b`, see
   `backend/.env`), but still **unconfirmed against the company's actual
@@ -250,69 +259,73 @@ flowchart LR
   with their own tools. The app never queries the real underlying
   business data itself (see HANDOFF.md's semantic-layer scope notes).
 
-### Getting an image onto the air-gapped network
+### Getting the app running at the office (2026-08-26: image path abandoned for Camunda/DataHub)
 
-`./deploy.sh` automates the whole decision below - this section is what
-it's actually doing under the hood, useful if it fails somewhere and
-you need to debug a specific step. The company network can reach GitHub
-but not PyPI/npm/Docker Hub directly (see `HANDOFF.md` "Why this repo
-exists" for the full constraint) - **but does reach `ghcr.io`**,
-confirmed from the office 2026-08-04.
+`./deploy.sh --office` automates the decision below - this section is
+what it's actually doing under the hood, useful if it fails somewhere
+and you need to debug a specific step. **This replaces the earlier
+"pull everything from ghcr.io, including Camunda/DataHub" plan** -
+those images got taken to the office, flagged by the company's
+vulnerability scanner, and even after chasing newer patch versions the
+CVE count couldn't be gotten to zero (Camunda alone has no newer patch
+available at all - see HANDOFF.md's "Vulnerability remediation round"
+and "Office mode" sections for the full history and numbers). Rather
+than keep fighting that, Camunda/DataHub simply aren't self-hosted at
+the office anymore.
 
 ```mermaid
 flowchart TD
     A["docker compose build\nbackend/frontend"] -->|works| Z1["use the freshly-built images"]
-    A -->|"pip install / npm ci fails\n(no PyPI/npm mirror)"| B["docker compose pull\nbackend/frontend from ghcr.io"]
-    C["docker compose pull\ncamunda / datahub's 7 images"] -->|each succeeds| Z2["self-host that service"]
-    C -->|"pull fails for that service"| D["skip it - app falls back to\nbackend/.env's CAMUNDA_BASE_URL /\nDATAHUB_API_URL instead"]
-    E["docker compose pull postgres"] -->|fails| F["hard error - no fallback,\nfix connectivity to ghcr.io"]
+    A -->|fails| F1["hard error in --office mode -\nno GHCR pull fallback, fix build\naccess (e.g. an internal mirror)"]
+    B["--office mode:\nCamunda/DataHub"] --> Z2["never self-hosted - always\nbackend/.env's CAMUNDA_BASE_URL /\nDATAHUB_API_URL, point these at\nthe company's real instances"]
+    E["docker compose pull postgres"] -->|fails| F2["hard error - no fallback,\nfix connectivity to ghcr.io"]
 ```
 
-**Backend/frontend**: `docker-compose.yml` sets both `image:` (
-`ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`)
-and `build:` - `deploy.sh` tries `docker compose build` first (tests
-whether the Docker daemon's registry mirror covers the base images
-`python:3.11-slim`/`node:20-alpine`/`nginx:alpine`, and whether
-`pip install`/`npm ci` reach internal mirrors), falling back to
-`docker compose pull` only if that fails. **Build first, not pull
-first, is deliberate** - a bare pull would happily succeed against
-whatever was last published to `ghcr.io` and silently use a stale image
-even when local source has changed (confirmed this the hard way once,
-see HANDOFF.md).
+**Backend/frontend**: `--office` mode builds from local source only
+(`docker compose build`, testing whether the Docker daemon's registry
+mirror covers the base images `python:3.11-slim`/`node:20-alpine`/
+`nginx:alpine`, and whether `pip install`/`npm ci` reach internal
+mirrors) - a failed build is a hard error, not a silent fallback to a
+`ghcr.io`-published image. That's deliberate: this repo's own
+backend/frontend images were never actually scanned during the
+vulnerability-remediation round, but there's no reason to assume the
+office's scanner would treat them differently, so the office no longer
+depends on any GHCR-hosted image for its own code either. (Local dev,
+no `--office` flag, still falls back to a GHCR pull if the local build
+fails - that path is unaffected.)
 
-**Camunda/DataHub**: `deploy.sh` tries `docker compose pull` for each
-(all 7 images for DataHub) and only includes that service's compose
-overlay file (`docker-compose.camunda.yml` /
-`datahub/docker-compose.datahub.yml`) if the pull succeeds - see
-HANDOFF.md's "Self-hosted images with a config fallback" for exactly
-how the fallback to `backend/.env`'s config works.
+**Camunda/DataHub**: in `--office` mode, `deploy.sh` never runs
+`docker compose pull` for these and never includes their overlay files
+(`docker-compose.camunda.yml` / `datahub/docker-compose.datahub.yml`) -
+the app always uses whatever `CAMUNDA_BASE_URL`/`DATAHUB_API_URL` are
+set to in `backend/.env`. Point those at the company's real instances
+before running `--office`, or ticket creation will just report a
+graceful "Skipped" Camunda status and DataHub will fall back to the
+app's built-in mock catalog. (Local dev, no `--office` flag, still
+tries to self-host both via image first - useful for testing the agent
+without company network access.)
 
-**Postgres**: no fallback - `deploy.sh` treats a failed pull as a hard
-error, since self-hosting Postgres is the actual plan here, not
-something to gracefully degrade out of.
+**Postgres**: no fallback in either mode - `deploy.sh` treats a failed
+pull as a hard error, since self-hosting Postgres is the actual plan
+here (the company's own Postgres is an unwieldy HA setup, not something
+worth connecting to instead - see HANDOFF.md), not something to
+gracefully degrade out of.
 
+- **GHCR path (`ghcr.io`)** is still how `postgres`, `backend`, and
+  `frontend` images get to the office (`ghcr.io/mail2yee/postgres:16-alpine`,
+  and `backend`/`frontend` at home via `docker compose build` + `push`,
+  though `--office` itself never pulls the latter two - only local dev
+  does, as a fallback). `camunda` and DataHub's 7 images are also still
+  mirrored to `ghcr.io/mail2yee/...` for local dev's use, just no longer
+  relevant to what happens at the office. All images are **public** —
+  confirmed by pulling anonymously (no `docker login`) successfully.
+  **`ghcr.io` reachability from the office is confirmed** (2026-08-04 -
+  it's a different host than `github.com`, which was already known to
+  work).
 - **Internal registries (Harbor, Nexus)**: confirmed 2026-08-04 these
-  exist but don't mirror everything - no Camunda image there, for one.
-  Still worth checking first for anything they *do* have.
-- **GHCR path (`ghcr.io`) — confirmed working end-to-end, including from
-  the office (2026-08-04):** `docker-compose.yml`'s `backend`/`frontend`
-  services set `image:` to
-  `ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-{backend,frontend}:latest`
-  alongside `build:` (`docker compose build` at home tags it, `docker
-  compose push` publishes it). **`camunda`, `postgres`, and DataHub's 7
-  images all use the same path too** (`ghcr.io/mail2yee/camunda-bpm-platform:7.22.0`,
-  `ghcr.io/mail2yee/postgres:16-alpine`,
-  `ghcr.io/mail2yee/{datahub-gms,datahub-frontend-react,datahub-actions,datahub-upgrade,mysql,opensearch,cp-kafka}:...`)
-  - since none of these are built by this repo,
-  `scripts/mirror-image-to-ghcr.sh` does the pull-retag-push for those
-  instead of `docker compose build`. All 9 images are flipped to
-  **public** — confirmed by logging out locally and pulling anonymously
-  (no `docker login` at all) successfully. So the office side really can
-  just be `git pull && ./deploy.sh`, no PAT needed there.
-  **`ghcr.io` reachability from the office is now confirmed** (2026-08-04
-  - it's a different host than `github.com`, which was already known to
-  work, so this needed its own test). Revisit switching the packages
-  back to private once this moves past the testing phase.
+  exist but don't mirror everything - no Camunda image there, for one
+  (now moot for Camunda specifically, since it's config-only at the
+  office, but still worth checking for anything else).
 
 Either way, capture what happens at the office with
 `./scripts/collect-debug-log.sh` (or manually in `TESTING_LOG.md`) and
@@ -399,6 +412,10 @@ just the *where*.
 - `*.test.jsx` / `*.test.js` — vitest + React Testing Library (29 tests).
 
 ## Run it locally (dev, at home)
+
+(For the office/air-gapped network, use `./deploy.sh --office` instead
+— see "Getting the app running at the office" below. Everything in
+this section is the local-dev-only, no-flag behavior.)
 
 **Configuration (required once, before the first run):**
 ```bash
