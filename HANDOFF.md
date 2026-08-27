@@ -1086,6 +1086,46 @@ execution against the new engine, `pytest`, `ruff`, `mypy`, all green.
   all still pass unchanged (tests use SQLite, never touched Postgres or
   MariaDB either way).
 
+## "No match" reply now lists the catalog instead of a flat rejection (2026-08-27)
+
+User tested a genuinely vague request - "我想要做一個 report 需要哪些 data
+source?" (I want to make a report, what data sources are there?) - and
+got the same flat `NOT_FOUND_REPLY` rejection as a truly off-topic
+message. That's a real gap: the request isn't off-topic, it's just too
+unspecific for `build_sql_prompt()`'s keyword-extraction step to match
+one data subject.
+
+User's first instinct was a full multi-turn clarification feature - the
+LLM asks a follow-up question, the user answers, then it searches.
+Talked through the cost before building anything: `/api/chat` and
+`streamChat()` (frontend/src/api.js) are both genuinely stateless today
+- only the current message is ever sent, no history - so this would
+need frontend conversation-history tracking, a backend prompt rewrite
+to be multi-turn aware, *and* a new "is this vague or specific enough
+to search" classification step. That last part carries the same
+reliability risk already hit once and reverted (see "Greeting detection
+fix" above: a small local model proved unreliable at a similar
+ambiguous classification).
+
+**Shipped the smaller version instead**: `chat.py`'s `NOT_FOUND_REPLY`
+constant became `not_found_reply(catalog, lang)` - same rejection
+sentence, but now lists the catalog's actual data subject names and
+ends with a clarifying question, instead of a dead end. No new state,
+no new classification step - every existing call site
+(`build_prompt()`'s LLM instructions, `local_rule_match()`,
+`keyword_search()`) just needed the `catalog` dict it already had in
+scope passed through. Verified live in the browser (rebuilt the backend
+image, re-ran the exact same query that prompted this): the reply now
+reads "目前目錄中有這些主題：FAB Production Move Forecast Summary、Customer
+Demand Wafer Orders、Specific Customer Capacity Allocation。可以請您說明一下
+想分析的報表主要跟哪個方向有關嗎？" instead of a flat rejection.
+`pytest`/`ruff`/`mypy` all still pass (three tests in `test_chat.py`
+that asserted against the old static constant were updated to call
+`not_found_reply()` with the same catalog fixture instead).
+
+The full multi-turn version is still on the table if this isn't enough
+once the user has used it more - deliberately not built preemptively.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

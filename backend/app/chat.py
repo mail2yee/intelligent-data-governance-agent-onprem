@@ -112,26 +112,45 @@ def is_greeting(msg: str) -> bool:
     return len(words) > 1 and all(w in _CHITCHAT_TOKENS for w in words)
 
 
-NOT_FOUND_REPLY = {
-    # Includes scope + a concrete example, same spirit as GREETING_REPLY
-    # below - added 2026-07-31 after an LLM-based 3-way classification
-    # (greeting vs no-match vs match) proved unreliable on a small local
-    # model (it kept misclassifying genuinely off-topic messages like
-    # "what's the weather" as a greeting) - reverted to a plain 2-way
-    # match/no-match decision and folded the "here's how to ask" guidance
-    # into this single no-match reply instead, so it's helpful regardless
-    # of *why* nothing matched (off-topic, or a real but uncataloged need,
-    # or a rare greeting that slipped past is_greeting()'s keyword check).
-    "zh": (
-        "抱歉，目前資料目錄中沒有找到符合您需求的資料主體。我只能協助您尋找適合完成報表的資料主體，"
-        "請試著這樣問我：「我想分析特定客戶的產能與出貨預估」。"
-    ),
-    "en": (
-        "Sorry, no data subject in our catalog matches your request. I can only help you find data "
-        "subjects for a report — try asking me something like \"I want to analyze a customer's capacity "
-        'and shipment forecast".'
-    ),
-}
+def not_found_reply(catalog: dict, lang: str) -> str:
+    """Same spirit as GREETING_REPLY below - added 2026-07-31 after an
+    LLM-based 3-way classification (greeting vs no-match vs match) proved
+    unreliable on a small local model (it kept misclassifying genuinely
+    off-topic messages like "what's the weather" as a greeting) -
+    reverted to a plain 2-way match/no-match decision and folded a
+    "here's how to ask" hint into this reply instead.
+
+    Extended 2026-08-27: a genuinely vague request (e.g. "I want to make
+    a report, what data sources are there?") isn't off-topic - it's a
+    real need that's just too unspecific to match one data subject via
+    search_text/SQL, and got the same flat rejection as a truly
+    off-topic message, a dead end for the user. Listing the catalog's
+    actual data subjects turns the rejection into a clarifying nudge
+    instead, without needing multi-turn conversation state (the frontend
+    only ever sends the current message, no history - see api.js) or a
+    new vague-vs-specific classification step, which would carry the
+    same small-model reliability risk the greeting classifier above was
+    reverted for.
+
+    Keep the leading "抱歉"/"沒有找到" (zh) and "Sorry"/"no data subject"
+    (en) substrings intact if editing this - run_chat() below matches on
+    them to detect that the LLM actually followed this instruction
+    rather than replying with something else entirely.
+    """
+    names = [str(item.get("name", pid)) for pid, item in catalog.items()]
+    if lang == "zh":
+        listed = "、".join(names) if names else "（目前目錄是空的）"
+        return (
+            f"抱歉，目前資料目錄中沒有找到明確符合您需求的資料主體。"
+            f"目前目錄中有這些主題：{listed}。"
+            f"可以請您說明一下想分析的報表主要跟哪個方向有關嗎？我會依此推薦最合適的資料主體。"
+        )
+    listed = ", ".join(names) if names else "(the catalog is currently empty)"
+    return (
+        f"Sorry, no data subject in our catalog clearly matches your request. "
+        f"Currently available data subjects: {listed}. "
+        f"Could you tell me more about which area your report is about, so I can recommend the best match?"
+    )
 GREETING_REPLY = {
     # Plain text, not HTML - the frontend renders this (and every other
     # reply string here, including raw LLM output) as plain text, not
@@ -181,11 +200,11 @@ def build_prompt(user_msg: str, lang: str, catalog: dict) -> str:
     keep apart. Greeting detection stays entirely in is_greeting()'s
     cheap keyword check (run_chat() tries that first, no LLM call) - if
     a greeting slips past that, it just falls through to this prompt and
-    gets NOT_FOUND_REPLY, which is written to be a helpful answer
+    gets not_found_reply(), which is written to be a helpful answer
     either way (see its own comment)."""
     knowledge_base = json.dumps(catalog, ensure_ascii=False)
     lang_name = "English" if lang == "en" else "Traditional Chinese (繁體中文)"
-    not_found_sentence = NOT_FOUND_REPLY[lang]
+    not_found_sentence = not_found_reply(catalog, lang)
     return f"""
     [Role]
     You are a rigorous data governance expert. Every user of this tool is
@@ -324,7 +343,7 @@ def local_rule_match(user_msg: str, lang: str, catalog: dict) -> tuple[list[str]
                 else f"💡 I found {item['name']} ({item.get('maturity_level', '')}-certified, quality score {item.get('data_quality_score', '')})."
             )
             return [product_id], reply
-    return [], NOT_FOUND_REPLY[lang]
+    return [], not_found_reply(catalog, lang)
 
 
 RESULTS_FOUND_REPLY = {
@@ -352,7 +371,7 @@ async def keyword_search(user_msg: str, lang: str, catalog: dict) -> tuple[list[
     await wrenai_client.sync_catalog(catalog)
     keywords = [kw.strip() for kw in user_msg.split() if kw.strip()]
     if not keywords:
-        return [], NOT_FOUND_REPLY[lang]
+        return [], not_found_reply(catalog, lang)
 
     async with async_session() as session:
         stmt = select(DataProduct.id)
@@ -361,7 +380,7 @@ async def keyword_search(user_msg: str, lang: str, catalog: dict) -> tuple[list[
         result = await session.execute(stmt)
         matched = [pid for (pid,) in result.all() if pid in catalog]
 
-    reply = RESULTS_FOUND_REPLY[lang](len(matched)) if matched else NOT_FOUND_REPLY[lang]
+    reply = RESULTS_FOUND_REPLY[lang](len(matched)) if matched else not_found_reply(catalog, lang)
     return matched, reply
 
 

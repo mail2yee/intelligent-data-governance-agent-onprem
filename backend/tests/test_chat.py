@@ -5,11 +5,11 @@ from sqlalchemy import select
 
 from app.chat import (
     GREETING_REPLY,
-    NOT_FOUND_REPLY,
     _extract_sql,
     is_greeting,
     keyword_search,
     local_rule_match,
+    not_found_reply,
     record_unmatched_query,
     run_chat,
     sse_event,
@@ -126,7 +126,7 @@ def test_local_rule_match_capacity_zh():
 def test_local_rule_match_no_match():
     matched, reply = local_rule_match("what is the weather", "en", CATALOG)
     assert matched == []
-    assert reply == NOT_FOUND_REPLY["en"]
+    assert reply == not_found_reply(CATALOG, "en")
 
 
 async def test_keyword_search_all_keywords_must_match():
@@ -145,13 +145,13 @@ async def test_keyword_search_single_keyword_matching_both_returns_both():
 async def test_keyword_search_no_match_returns_not_found_reply():
     matched, reply = await keyword_search("nonexistent keyword", "en", KEYWORD_CATALOG)
     assert matched == []
-    assert reply == NOT_FOUND_REPLY["en"]
+    assert reply == not_found_reply(KEYWORD_CATALOG, "en")
 
 
 async def test_keyword_search_blank_query_returns_not_found_without_querying_db():
     matched, reply = await keyword_search("   ", "en", KEYWORD_CATALOG)
     assert matched == []
-    assert reply == NOT_FOUND_REPLY["en"]
+    assert reply == not_found_reply(KEYWORD_CATALOG, "en")
 
 
 async def test_run_chat_keyword_mode_yields_only_final_event_no_llm_call(monkeypatch):
