@@ -1,0 +1,65 @@
+# Ported from docker-compose.camunda.yml. Plain Deployment, no PVC - the
+# compose file never defined one either, so Camunda 7's default embedded
+# H2 database is used (ephemeral, lost on pod restart). That already
+# matches the existing local-dev behavior (backend/entrypoint.sh
+# redeploys the BPMN process idempotently via deploy-changed-only=true
+# on every startup) - acceptable for a demo, revisit with a real external
+# process-engine DB if this needs to survive restarts with in-flight
+# tickets intact.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: camunda
+  namespace: dgo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: camunda
+  template:
+    metadata:
+      labels:
+        app: camunda
+    spec:
+      # See 01-mariadb.yaml's comment - avoids K8s's auto-injected
+      # $<SERVICE>_PORT env vars colliding with this app's own vars.
+      enableServiceLinks: false
+      containers:
+        - name: camunda
+          image: ghcr.io/mail2yee/camunda-bpm-platform:7.22.0
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /engine-rest/engine
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /engine-rest/engine
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: camunda
+  namespace: dgo
+spec:
+  selector:
+    app: camunda
+  ports:
+    - port: 8080
+      targetPort: 8080

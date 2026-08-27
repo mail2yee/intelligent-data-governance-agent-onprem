@@ -1,0 +1,50 @@
+# GKE demo deployment - NOT the air-gapped office target (see HANDOFF.md's
+# "Why this repo exists"). This is a from-scratch port of docker-compose.yml
+# + docker-compose.camunda.yml + datahub/docker-compose.datahub.yml to real
+# K8s manifests (StatefulSets for anything stateful, not just containers
+# with volumes), specifically for "let people see it running on the
+# internet" - see k8s/README.md for the full deployment story and the
+# real cost/complexity tradeoffs of this vs. a single Compute Engine VM.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dgo
+---
+# Lets datahub-gms's initContainer poll the datahub-system-update Job's
+# status via `kubectl get job` - the closest K8s-native equivalent to
+# docker-compose's `depends_on: condition: service_completed_successfully`,
+# which has no direct built-in primitive in plain K8s (no Helm hooks
+# here, this is hand-written manifests). Read-only, scoped to Jobs only,
+# in this namespace only.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dgo-job-reader
+  namespace: dgo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: job-reader
+  namespace: dgo
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    # watch is required by `kubectl wait` (08-datahub-gms.yaml,
+    # 09-datahub-frontend.yaml's initContainers) - it watches for the
+    # condition rather than polling with plain get/list.
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dgo-job-reader-binding
+  namespace: dgo
+subjects:
+  - kind: ServiceAccount
+    name: dgo-job-reader
+    namespace: dgo
+roleRef:
+  kind: Role
+  name: job-reader
+  apiGroup: rbac.authorization.k8s.io

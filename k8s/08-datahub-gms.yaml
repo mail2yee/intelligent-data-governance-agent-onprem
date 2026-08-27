@@ -1,0 +1,184 @@
+# Ported from datahub/docker-compose.datahub.yml's datahub-gms-quickstart
+# service. Every EBEAN_DATASOURCE_HOST/ELASTICSEARCH_HOST/
+# KAFKA_BOOTSTRAP_SERVER value below is updated from compose's
+# "mysql"/"search"/"broker" hostnames to this file set's
+# datahub-mysql/datahub-opensearch/datahub-kafka Service names.
+#
+# The two ${HOME}/.datahub/{plugins,search} bind mounts from compose
+# become emptyDir here (ephemeral) - they're DataHub's own ingestion-CLI
+# plugin cache, unrelated to this app's own datahub/seed_catalog.py
+# (which talks to GMS over GraphQL directly, not through DataHub's
+# managed-ingestion feature) - losing this cache on pod restart just
+# means a slower first ingestion run, not lost data.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datahub-gms
+  namespace: dgo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: datahub-gms
+  template:
+    metadata:
+      labels:
+        app: datahub-gms
+    spec:
+      # See 01-mariadb.yaml's comment for why - this is the exact pod
+      # where the bug was actually found (DATAHUB_GMS_PORT collision).
+      enableServiceLinks: false
+      serviceAccountName: dgo-job-reader
+      initContainers:
+        # kubectl wait, not a shell polling loop - rancher/kubectl ships
+        # only the kubectl binary, no shell (confirmed by testing: `sh:
+        # executable file not found in $PATH`). kubectl's own `wait`
+        # subcommand is the correct tool for this anyway, no shell
+        # needed either way.
+        - name: wait-for-system-update
+          image: rancher/kubectl:v1.32.13
+          command:
+            - kubectl
+            - -n
+            - dgo
+            - wait
+            - --for=condition=complete
+            - job/datahub-system-update
+            - --timeout=600s
+      containers:
+        - name: datahub-gms
+          image: ghcr.io/mail2yee/datahub-gms:v1.5.0.6
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ALTERNATE_MCP_VALIDATION
+              value: "true"
+            - name: CONFIG_ENTITY_REGISTRY_USE_OPTIMIZED_LOADING
+              value: "true"
+            - name: DATAHUB_BASE_PATH
+              value: /
+            - name: DATAHUB_GMS_BASE_PATH
+              value: /
+            - name: DATAHUB_SERVER_TYPE
+              value: quickstart
+            - name: DATAHUB_TELEMETRY_ENABLED
+              value: "false"
+            - name: DATAHUB_TOKEN_SERVICE_SALT
+              value: "DtFuVe+U7P8VgbGKCG5ZUFBWv3J5iMydW8WJjKGrkqo="
+            - name: DATAHUB_TOKEN_SERVICE_SIGNING_KEY
+              value: "jEuGYDOUJy/4urNQhUGQC3NOqoU8HhwGeDf4OfLcIBk="
+            - name: DATAHUB_UPGRADE_HISTORY_KAFKA_CONSUMER_GROUP_ID
+              value: generic-duhe-consumer-job-client-gms
+            - name: EBEAN_DATASOURCE_DRIVER
+              value: com.mysql.jdbc.Driver
+            - name: EBEAN_DATASOURCE_HOST
+              value: datahub-mysql:3306
+            - name: EBEAN_DATASOURCE_PASSWORD
+              value: datahub
+            - name: EBEAN_DATASOURCE_URL
+              value: "jdbc:mysql://datahub-mysql:3306/datahub?verifyServerCertificate=false&useSSL=true&useUnicode=yes&characterEncoding=UTF-8&enabledTLSProtocols=TLSv1.2"
+            - name: EBEAN_DATASOURCE_USERNAME
+              value: root
+            - name: ELASTICSEARCH_HOST
+              value: datahub-opensearch
+            - name: ELASTICSEARCH_IMPLEMENTATION
+              value: opensearch
+            - name: ELASTICSEARCH_INDEX_BUILDER_MAPPINGS_REINDEX
+              value: "true"
+            - name: ELASTICSEARCH_INDEX_BUILDER_SETTINGS_REINDEX
+              value: "true"
+            - name: ELASTICSEARCH_LIMIT_RESULTS_STRICT
+              value: "true"
+            - name: ELASTICSEARCH_PORT
+              value: "9200"
+            - name: ELASTICSEARCH_PROTOCOL
+              value: http
+            - name: ELASTICSEARCH_USE_SSL
+              value: "false"
+            - name: ENTITY_REGISTRY_CONFIG_PATH
+              value: /datahub/datahub-gms/resources/entity-registry.yml
+            - name: ENTITY_SERVICE_ENABLE_RETENTION
+              value: "true"
+            - name: ENTITY_VERSIONING_ENABLED
+              value: "true"
+            - name: ES_BULK_REFRESH_POLICY
+              value: WAIT_UNTIL
+            - name: EXTRACT_JAR_ENABLED
+              value: "true"
+            - name: GRAPH_SERVICE_DIFF_MODE_ENABLED
+              value: "true"
+            - name: GRAPH_SERVICE_IMPL
+              value: elasticsearch
+            - name: JAVA_OPTS
+              value: "-Xms1g -Xmx1g"
+            - name: KAFKA_BOOTSTRAP_SERVER
+              value: datahub-kafka:29092
+            - name: KAFKA_SCHEMAREGISTRY_URL
+              value: http://datahub-gms:8080/schema-registry/api/
+            - name: MAE_CONSUMER_ENABLED
+              value: "true"
+            - name: MCE_CONSUMER_ENABLED
+              value: "true"
+            - name: METADATA_SERVICE_AUTH_ENABLED
+              value: "false"
+            - name: PE_CONSUMER_ENABLED
+              value: "true"
+            - name: POLICY_CACHE_REFRESH_INTERVAL_SECONDS
+              value: "120"
+            - name: SCHEMA_REGISTRY_TYPE
+              value: INTERNAL
+            - name: STRICT_URN_VALIDATION_ENABLED
+              value: "true"
+            - name: UI_INGESTION_ENABLED
+              value: "true"
+            - name: UI_INGESTION_DEFAULT_CLI_VERSION
+              value: "1.6.0.10"
+          volumeMounts:
+            - name: datahub-plugins
+              mountPath: /etc/datahub/plugins
+            - name: datahub-search
+              mountPath: /etc/datahub/search
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 15
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 1.5Gi
+            limits:
+              cpu: 1500m
+              memory: 2Gi
+      volumes:
+        - name: datahub-plugins
+          emptyDir: {}
+        - name: datahub-search
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: datahub-gms
+  namespace: dgo
+spec:
+  # Same root cause as datahub-kafka's Service (07-datahub-kafka.yaml) -
+  # GMS calls back into its own KAFKA_SCHEMAREGISTRY_URL
+  # (http://datahub-gms:8080/...) as literally the last step of its own
+  # Spring Boot startup (registering a schema on context-refresh) - a
+  # Service normally has zero endpoints for a pod that isn't Ready yet,
+  # so this self-call gets "Connection refused" and GMS crashes right
+  # as it's about to become healthy, forever. Confirmed by testing:
+  # removing this line reproduces a clean, consistent crash loop: same
+  # stack trace every time, at the same startup stage, unaffected by
+  # available memory (ruled out as the same generic case of pod not
+  # marked Ready yet).
+  publishNotReadyAddresses: true
+  selector:
+    app: datahub-gms
+  ports:
+    - port: 8080
+      targetPort: 8080

@@ -1,0 +1,142 @@
+# Ported from datahub/docker-compose.datahub.yml's kafka-broker service.
+# Renamed datahub-kafka here (compose called it "broker") for the same
+# clarity reason as datahub-mysql/datahub-opensearch - every
+# KAFKA_LISTENERS/KAFKA_ADVERTISED_LISTENERS hostname below is updated
+# to match this Service's name accordingly.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: datahub-kafka
+  namespace: dgo
+spec:
+  serviceName: datahub-kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app: datahub-kafka
+  template:
+    metadata:
+      labels:
+        app: datahub-kafka
+    spec:
+      # See 01-mariadb.yaml's comment - avoids K8s's auto-injected
+      # $<SERVICE>_PORT env vars colliding with this app's own vars.
+      enableServiceLinks: false
+      containers:
+        - name: kafka
+          image: ghcr.io/mail2yee/cp-kafka:8.3.0
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              file_path="/var/lib/kafka/data/clusterID"
+              if [ ! -f "$file_path" ]; then
+                 /bin/kafka-storage random-uuid > "$file_path"
+                 kafka-storage format --ignore-formatted -t "$(cat "$file_path")" -c /etc/kafka/kafka.properties
+              fi
+              export CLUSTER_ID=$(cat "$file_path")
+              /etc/confluent/docker/run
+          ports:
+            - containerPort: 9092
+            - containerPort: 29092
+          env:
+            # KAFKA_LISTENERS (bind address) is 0.0.0.0, NOT the compose
+            # original's "broker" hostname - that only worked in Docker
+            # Compose because the container's own `hostname:` literally
+            # was "broker", self-resolving trivially. In K8s, binding a
+            # listener to the Service name fails outright ("Unresolved
+            # address" / the Service can resolve to a different pod's
+            # IP than this one) - confirmed by testing this exact
+            # manifest against a real (kind) cluster. KAFKA_ADVERTISED_LISTENERS
+            # (the address other pods reconnect to) uses this
+            # StatefulSet pod's own stable per-instance DNS name
+            # (<pod>.<service>, deterministic at replicas: 1 -
+            # datahub-kafka-0), which any other pod in the namespace can
+            # actually resolve and connect to.
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: BROKER://datahub-kafka-0.datahub-kafka:29092,EXTERNAL://datahub-kafka-0.datahub-kafka:9092
+            - name: KAFKA_BROKER_ID
+              value: "1"
+            - name: KAFKA_CONFLUENT_SUPPORT_METRICS_ENABLE
+              value: "false"
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: CONTROLLER
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: 1@datahub-kafka-0.datahub-kafka:39092
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: "0"
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xms512m -Xmx512m"
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: BROKER
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: CONTROLLER:PLAINTEXT,BROKER:PLAINTEXT,EXTERNAL:PLAINTEXT
+            - name: KAFKA_LISTENERS
+              value: BROKER://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:39092
+            - name: KAFKA_LOG4J_LOGGERS
+              value: org.apache.kafka.image.loader.MetadataLoader=WARN
+            - name: KAFKA_MAX_MESSAGE_BYTES
+              value: "5242880"
+            - name: KAFKA_MESSAGE_MAX_BYTES
+              value: "5242880"
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: "controller, broker"
+          volumeMounts:
+            - name: brokerdata
+              mountPath: /var/lib/kafka/data
+          readinessProbe:
+            # localhost, not the Service name - this runs from inside
+            # the same pod it's checking, and KAFKA_LISTENERS binds
+            # 0.0.0.0 (see above), so localhost always reaches it
+            # regardless of DNS/Service state.
+            exec:
+              command: ["sh", "-c", "kafka-broker-api-versions --bootstrap-server localhost:29092"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 1000m
+              memory: 1.5Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: brokerdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: datahub-kafka
+  namespace: dgo
+spec:
+  selector:
+    app: datahub-kafka
+  # Without this, the per-pod DNS record (datahub-kafka-0.datahub-kafka,
+  # used above as KAFKA_ADVERTISED_LISTENERS/KAFKA_CONTROLLER_QUORUM_VOTERS)
+  # only gets published once the pod is Ready - but the broker needs to
+  # resolve and connect to that exact name to register with its own
+  # controller *before* it can pass its readinessProbe. A real
+  # chicken-and-egg deadlock hit by testing this against a real cluster:
+  # the broker fatal-errors with "Received a fatal error while waiting
+  # for the controller to acknowledge that we are caught up" and
+  # crash-loops forever without this.
+  publishNotReadyAddresses: true
+  ports:
+    - name: broker
+      port: 29092
+      targetPort: 29092
+    - name: external
+      port: 9092
+      targetPort: 9092
+  clusterIP: None

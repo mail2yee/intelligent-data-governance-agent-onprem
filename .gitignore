@@ -23,6 +23,8 @@ backend/.deepeval/
 .env
 backend/.env
 frontend/.env
+k8s/db-secret.env
+k8s/backend-secret.env
 
 # OS
 .DS_Store

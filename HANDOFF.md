@@ -1126,6 +1126,68 @@ that asserted against the old static constant were updated to call
 The full multi-turn version is still on the table if this isn't enough
 once the user has used it more - deliberately not built preemptively.
 
+## GKE demo deployment - new `k8s/` directory (2026-08-27)
+
+User wants to show this app to people with a real public URL - the GCP
+PoC sibling repo apparently has one, this repo didn't. **This is
+explicitly not the air-gapped office target** (see "Why this repo
+exists" above) - it's a separate, additional deployment path that
+coexists with everything else, for demo purposes only.
+
+Considered Compute Engine (one VM, just run the existing
+`docker-compose.yml` stack as-is) vs. GKE. User explicitly chose GKE
+despite Compute Engine being the objectively simpler path for this use
+case - went with it anyway per their choice, see `k8s/README.md` for
+the tradeoff as presented.
+
+`k8s/` is a from-scratch, hand-written port of `docker-compose.yml` +
+`docker-compose.camunda.yml` + `datahub/docker-compose.datahub.yml` to
+K8s manifests - `StatefulSet`+`PersistentVolumeClaim` for anything
+stateful (MariaDB, DataHub's own MySQL/OpenSearch/Kafka), plain
+`Deployment` for everything else, a `Job` for DataHub's one-shot
+`system-update` init step. No GCP credentials or cluster available in
+this session, so verification used `kind` (a local single-node cluster
+in Docker) instead of skipping verification entirely - this caught
+real bugs that pure YAML/schema validation would have missed, real
+enough that debugging them for the first time against billed GKE
+compute would have been a much worse experience:
+
+- `bitnami/kubectl:1.30` doesn't exist (Bitnami dropped versioned tags)
+  and that image also ships no shell - switched to `rancher/kubectl`
+  and from a shell polling loop to `kubectl wait`.
+- Kafka's listener config, ported directly from compose's
+  `hostname: broker` self-resolution trick, doesn't translate to K8s -
+  needed `0.0.0.0` binds plus the StatefulSet pod's own stable
+  per-instance DNS name for advertised listeners, plus
+  `publishNotReadyAddresses: true` on its Service to break a
+  self-referential chicken-and-egg deadlock (the broker needs to
+  resolve its own advertised address to finish starting, but that DNS
+  entry doesn't exist until the pod is already Ready).
+- K8s's legacy auto-injected `$<SERVICE>_PORT` env vars silently
+  clobbered DataHub's own identically-named `DATAHUB_GMS_PORT` config
+  var, crashing GMS's Spring Boot config binder - fixed with
+  `enableServiceLinks: false` on every pod in the directory, not just
+  patched for GMS specifically.
+- The same self-referential-Service deadlock as Kafka's, independently,
+  on `datahub-gms`'s own Service (GMS calls its own schema-registry URL
+  as the last step of its own startup) - diagnosed with high confidence
+  from a clean, 100%-reproducible crash, but **not fully re-confirmed**
+  after the fix - ran out of local machine resources (this `kind`
+  cluster competing with the same laptop's already-running local dev
+  Docker Compose stack for memory) before finishing that verification
+  pass. Flagged explicitly in `k8s/README.md` rather than claimed as
+  proven.
+
+See `k8s/README.md` for the full deployment story (prerequisites,
+`gcloud`/`kubectl` commands, secrets setup, a real cost warning - this
+is a continuously-running cost, not one-time, and DataHub's stack alone
+is the same JVM-heavy set of services that got OOM-killed repeatedly in
+local Docker testing), and for exactly what's verified vs. still
+unverified (real GKE-specific things like LoadBalancer provisioning and
+whether backend/frontend's amd64-only images actually run cleanly on
+real amd64 GKE nodes couldn't be tested from this arm64 dev machine's
+`kind` cluster either way).
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

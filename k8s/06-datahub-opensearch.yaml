@@ -1,0 +1,87 @@
+# Ported from datahub/docker-compose.datahub.yml's opensearch service.
+# Pinned to 2.19.6 on purpose - DataHub v1.5.0.6's GMS hard-rejects
+# OpenSearch 3.x (confirmed by testing, see HANDOFF.md's "Vulnerability
+# remediation round"). Named datahub-opensearch here (compose called it
+# "search") so hostnames stay unambiguous next to the app's own mariadb.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: datahub-opensearch
+  namespace: dgo
+spec:
+  serviceName: datahub-opensearch
+  replicas: 1
+  selector:
+    matchLabels:
+      app: datahub-opensearch
+  template:
+    metadata:
+      labels:
+        app: datahub-opensearch
+    spec:
+      # See 01-mariadb.yaml's comment - avoids K8s's auto-injected
+      # $<SERVICE>_PORT env vars colliding with this app's own vars.
+      enableServiceLinks: false
+      # OpenSearch's bootstrap checks want this raised - without it the
+      # container can fail to start under real (non-Docker-Desktop)
+      # Linux kernels, which GKE nodes are. Docker Desktop's VM already
+      # sets this host-wide, masking the issue in local dev.
+      initContainers:
+        - name: sysctl
+          image: busybox:1.36
+          securityContext:
+            privileged: true
+          command: ["sysctl", "-w", "vm.max_map_count=262144"]
+      containers:
+        - name: opensearch
+          image: ghcr.io/mail2yee/opensearch:2.19.6
+          ports:
+            - containerPort: 9200
+          env:
+            - name: DISABLE_SECURITY_PLUGIN
+              value: "true"
+            - name: ES_JAVA_OPTS
+              value: "-Xms256m -Xmx512m -Dlog4j2.formatMsgNoLookups=true"
+            - name: OPENSEARCH_JAVA_OPTS
+              value: "-Xms768m -Xmx1024m -Dlog4j2.formatMsgNoLookups=true"
+            - name: discovery.type
+              value: single-node
+          volumeMounts:
+            - name: osdata
+              mountPath: /usr/share/opensearch/data
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health?wait_for_status=yellow&timeout=0s
+              port: 9200
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 15
+            failureThreshold: 10
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1.5Gi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: osdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: datahub-opensearch
+  namespace: dgo
+spec:
+  selector:
+    app: datahub-opensearch
+  ports:
+    - port: 9200
+      targetPort: 9200
+  clusterIP: None

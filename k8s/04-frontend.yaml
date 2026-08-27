@@ -1,0 +1,61 @@
+# Ported from docker-compose.yml's frontend service. nginx.conf's
+# `proxy_pass http://backend:8000/...` resolves via K8s's own DNS
+# (backend.dgo.svc.cluster.local, or just "backend" since nginx runs in
+# the same namespace) exactly like it resolves "backend" via Docker
+# Compose's network today - no nginx.conf changes needed.
+#
+# Exposed via a LoadBalancer Service (plain external IP, HTTP only) -
+# not a GKE Ingress + ManagedCertificate, on purpose: this is "let
+# people see it" over a bare IP, not a real domain with TLS. Swap this
+# for an Ingress once there's an actual domain to point at - see
+# k8s/README.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: dgo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      # See 01-mariadb.yaml's comment - avoids K8s's auto-injected
+      # $<SERVICE>_PORT env vars colliding with this app's own vars.
+      enableServiceLinks: false
+      containers:
+        - name: frontend
+          image: ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: dgo
+spec:
+  type: LoadBalancer
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80

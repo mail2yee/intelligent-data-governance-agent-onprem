@@ -1,0 +1,70 @@
+# Ported from datahub/docker-compose.datahub.yml's
+# datahub-actions-quickstart service. Depends on datahub-gms being up
+# (compose: condition: service_healthy) - a plain port-reachability wait
+# is enough here (unlike GMS's own dependency on the system-update Job
+# actually *completing*, not just mysql/opensearch/kafka being up).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datahub-actions
+  namespace: dgo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: datahub-actions
+  template:
+    metadata:
+      labels:
+        app: datahub-actions
+    spec:
+      # See 01-mariadb.yaml's comment - avoids K8s's auto-injected
+      # $<SERVICE>_PORT env vars colliding with this app's own vars.
+      enableServiceLinks: false
+      initContainers:
+        - name: wait-for-gms
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z datahub-gms 8080; do echo waiting for datahub-gms; sleep 3; done"]
+      containers:
+        - name: datahub-actions
+          image: ghcr.io/mail2yee/datahub-actions:v1.5.0.6-slim
+          env:
+            - name: ACTIONS_CONFIG
+              value: ""
+            - name: ACTIONS_EXTRA_PACKAGES
+              value: ""
+            - name: DATAHUB_GMS_HOST
+              value: datahub-gms
+            - name: DATAHUB_GMS_PORT
+              value: "8080"
+            - name: DATAHUB_GMS_PROTOCOL
+              value: http
+            - name: DATAHUB_SYSTEM_CLIENT_ID
+              value: __datahub_system
+            - name: DATAHUB_SYSTEM_CLIENT_SECRET
+              value: JohnSnowKnowsNothing
+            - name: ELASTICSEARCH_HOST
+              value: datahub-opensearch
+            - name: ELASTICSEARCH_PORT
+              value: "9200"
+            - name: ELASTICSEARCH_PROTOCOL
+              value: http
+            - name: ELASTICSEARCH_USE_SSL
+              value: "false"
+            - name: KAFKA_BOOTSTRAP_SERVER
+              value: datahub-kafka:29092
+            - name: KAFKA_PROPERTIES_SECURITY_PROTOCOL
+              value: PLAINTEXT
+            - name: METADATA_AUDIT_EVENT_NAME
+              value: MetadataAuditEvent_v4
+            - name: METADATA_CHANGE_LOG_VERSIONED_TOPIC_NAME
+              value: MetadataChangeLog_Versioned_v1
+            - name: SCHEMA_REGISTRY_URL
+              value: http://datahub-gms:8080/schema-registry/api/
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi

@@ -1,0 +1,81 @@
+# Ported from datahub/docker-compose.datahub.yml's mysql service -
+# DataHub's OWN metadata-store MySQL, unrelated to the app's mariadb
+# StatefulSet (01-mariadb.yaml). Two separate MySQL-protocol databases
+# on purpose, same as local dev - DataHub owns its schema entirely, this
+# app's tickets/data_products tables have nothing to do with it.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: datahub-mysql
+  namespace: dgo
+spec:
+  serviceName: datahub-mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: datahub-mysql
+  template:
+    metadata:
+      labels:
+        app: datahub-mysql
+    spec:
+      # See 01-mariadb.yaml's comment - avoids K8s's auto-injected
+      # $<SERVICE>_PORT env vars colliding with this app's own vars.
+      enableServiceLinks: false
+      containers:
+        - name: mysql
+          image: ghcr.io/mail2yee/mysql:8.4.9
+          # No --default-authentication-plugin flag - removed in MySQL
+          # 8.4+, see the docker-compose.yml comment history for why.
+          args:
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_bin
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_DATABASE
+              value: datahub
+            - name: MYSQL_PASSWORD
+              value: datahub
+            - name: MYSQL_ROOT_HOST
+              value: "%"
+            - name: MYSQL_ROOT_PASSWORD
+              value: datahub
+            - name: MYSQL_USER
+              value: datahub
+          volumeMounts:
+            - name: mysqldata
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h localhost -u datahub --password=datahub"]
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: mysqldata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: datahub-mysql
+  namespace: dgo
+spec:
+  selector:
+    app: datahub-mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+  clusterIP: None

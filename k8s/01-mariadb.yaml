@@ -1,0 +1,87 @@
+# Ported from docker-compose.yml's mariadb service. StatefulSet (not a
+# plain Deployment) because it owns a PersistentVolumeClaim - a
+# Deployment's pods are interchangeable and don't get stable storage
+# identity, which matters here since this is the app's actual database,
+# not a cache. Single replica: MariaDB isn't clustered here, same as the
+# docker-compose setup - no fallback, self-hosting one instance is the
+# actual plan (see docker-compose.yml's comment for why: the company's
+# own Postgres/MariaDB equivalent is an unwieldy HA setup this repo
+# deliberately avoids depending on).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mariadb
+  namespace: dgo
+spec:
+  serviceName: mariadb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      # K8s auto-injects a $<SERVICE>_PORT / $<SERVICE>_SERVICE_HOST env
+      # var for every Service in the namespace into every pod (legacy
+      # Docker-links-style behavior) - disabled everywhere in this
+      # directory on principle, since it's a real, confirmed footgun:
+      # DATAHUB_GMS_PORT (08-datahub-gms.yaml's own literal env var,
+      # "8080") got silently clobbered by K8s's auto-injected
+      # DATAHUB_GMS_PORT=tcp://<ip>:8080 for the datahub-gms Service of
+      # the same name, crashing GMS's Spring Boot config binder
+      # (expected an int, got a URL string) - confirmed by testing
+      # this exact manifest set against a real cluster.
+      enableServiceLinks: false
+      containers:
+        - name: mariadb
+          image: ghcr.io/mail2yee/mariadb:11.4
+          ports:
+            - containerPort: 3306
+          envFrom:
+            - secretRef:
+                name: dgo-db-secret
+          volumeMounts:
+            - name: mariadbdata
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "mariadb-admin ping -h localhost -u dgo -p$MARIADB_PASSWORD"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "mariadb-admin ping -h localhost -u dgo -p$MARIADB_PASSWORD"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: mariadbdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: dgo
+spec:
+  selector:
+    app: mariadb
+  ports:
+    - port: 3306
+      targetPort: 3306
+  clusterIP: None # headless - StatefulSet convention, stable per-pod DNS not needed here (1 replica) but keeps this idiomatic

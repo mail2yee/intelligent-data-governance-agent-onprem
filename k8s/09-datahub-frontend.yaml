@@ -1,0 +1,106 @@
+# Ported from datahub/docker-compose.datahub.yml's frontend-quickstart
+# service - DataHub's OWN web UI (browsing the catalog, managing
+# ingestion), unrelated to this app's own React frontend
+# (04-frontend.yaml). Not exposed externally by default (ClusterIP) -
+# this is an internal/debugging tool, not part of the public demo
+# surface; add a LoadBalancer Service if you want to browse it directly,
+# same pattern as 04-frontend.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datahub-frontend
+  namespace: dgo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: datahub-frontend
+  template:
+    metadata:
+      labels:
+        app: datahub-frontend
+    spec:
+      # See 01-mariadb.yaml's comment - avoids K8s's auto-injected
+      # $<SERVICE>_PORT env vars colliding with this app's own vars.
+      enableServiceLinks: false
+      serviceAccountName: dgo-job-reader
+      initContainers:
+        # kubectl wait, not a shell polling loop - see 08-datahub-gms.yaml's
+        # comment for why (rancher/kubectl has no shell).
+        - name: wait-for-system-update
+          image: rancher/kubectl:v1.32.13
+          command:
+            - kubectl
+            - -n
+            - dgo
+            - wait
+            - --for=condition=complete
+            - job/datahub-system-update
+            - --timeout=600s
+      containers:
+        - name: datahub-frontend
+          image: ghcr.io/mail2yee/datahub-frontend-react:v1.5.0.6
+          ports:
+            - containerPort: 9002
+          env:
+            - name: DATAHUB_APP_VERSION
+              value: v1.5.0.6
+            - name: DATAHUB_BASE_PATH
+              value: /
+            - name: DATAHUB_GMS_BASE_PATH
+              value: /
+            - name: DATAHUB_GMS_HOST
+              value: datahub-gms
+            - name: DATAHUB_GMS_PORT
+              value: "8080"
+            - name: DATAHUB_PLAY_MEM_BUFFER_SIZE
+              value: 10MB
+            - name: DATAHUB_SECRET
+              value: YouKnowNothing
+            - name: DATAHUB_TRACKING_TOPIC
+              value: DataHubUsageEvent_v1
+            - name: ELASTIC_CLIENT_HOST
+              value: datahub-opensearch
+            - name: ELASTIC_CLIENT_PORT
+              value: "9200"
+            - name: JAVA_OPTS
+              value: >-
+                -Xms512m -Xmx512m -Dhttp.port=9002
+                -Dconfig.file=datahub-frontend/conf/application.conf
+                -Djava.security.auth.login.config=datahub-frontend/conf/jaas.conf
+                -Dlogback.configurationFile=datahub-frontend/conf/logback.xml
+                -Dlogback.debug=false -Dpidfile.path=/dev/null
+            - name: KAFKA_BOOTSTRAP_SERVER
+              value: datahub-kafka:29092
+            - name: PLAY_HTTP_CONTEXT
+              value: /
+          volumeMounts:
+            - name: datahub-plugins
+              mountPath: /etc/datahub/plugins
+          readinessProbe:
+            tcpSocket:
+              port: 9002
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+      volumes:
+        - name: datahub-plugins
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: datahub-frontend
+  namespace: dgo
+spec:
+  selector:
+    app: datahub-frontend
+  ports:
+    - port: 9002
+      targetPort: 9002
