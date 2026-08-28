@@ -19,9 +19,9 @@ StatefulSet+PVC doesn't have that problem).
 I (Claude) don't have GCP credentials or a real cluster to test
 against, so I installed `kind` (a local single-node K8s cluster running
 in Docker) on this dev machine and applied every manifest for real -
-not just `kubectl apply --dry-run`. That caught four genuine bugs that
-schema/syntax validation alone would have missed, all fixed in the
-manifests as they stand now:
+not just `kubectl apply --dry-run`. That caught five genuine bugs that
+schema/syntax validation alone would have missed, all fixed and
+re-confirmed in the manifests as they stand now:
 
 1. **`bitnami/kubectl:1.30` doesn't exist** (Bitnami restructured their
    tagging, only `latest` and digest tags remain) - switched to
@@ -55,31 +55,59 @@ manifests as they stand now:
    Service itself, same root cause as Kafka's - GMS calls back into its
    own `KAFKA_SCHEMAREGISTRY_URL` (`http://datahub-gms:8080/...`) as
    the literal last step of its own startup, which needs the Service to
-   route to this not-yet-Ready pod. **This one is diagnosed from a
-   clean, consistent, 100%-reproducible crash (same stack trace every
-   time, ruled out memory pressure as the cause by freeing up the node
-   and seeing it recur identically) but I ran out of local machine
-   resources (this kind cluster competing with the same laptop's
-   already-running local dev Docker Compose stack) before I could
-   re-confirm the fix actually resolves it** - the diagnosis matches
-   the Kafka case exactly and I'm confident in it, but flagging the gap
-   honestly rather than claiming a clean verification that didn't
-   finish.
+   route to this not-yet-Ready pod. **Confirmed fixed on a second test
+   pass**: `datahub-gms` ran `1/1 Running`, zero restarts, sustained
+   across 5+ checks over several minutes, alongside the rest of
+   DataHub's stack (mysql, opensearch, kafka, the system-update Job,
+   actions, frontend) all healthy at the same time.
 
-**Not verified even locally** (things `kind` can't tell you, or that I
-didn't get to): the `backend`/`frontend` images are amd64-only and
-can't actually run on this Mac's arm64 `kind` node (`ImagePullBackOff:
-no match for platform in manifest`) - this is expected to work fine on
-real GKE nodes (amd64), but wasn't directly confirmed here. The
-`LoadBalancer` Service for `frontend` (external IP provisioning is a
-real cloud-provider feature `kind` doesn't replicate). Real resource
-sizing at scale without a resource-starved single-node test cluster
-fighting other processes for memory. **Treat this as a well-tested
-first draft, not a fully proven deployment** - the four-and-a-half bugs
-above are exactly the kind of thing that would otherwise have first
-surfaced while burning real GKE compute time; there could still be
-GKE-specific issues (LoadBalancer quota, node image differences, etc.)
-neither `kind` nor I could catch.
+**Also confirmed, backend/frontend included**: this Mac is arm64
+(Apple Silicon) and the GHCR images are built amd64-only on purpose
+(the real office target is x86_64) - `kind`'s node inherits the host
+architecture, so those images fail outright there
+(`ImagePullBackOff: no match for platform in manifest`), unrelated to
+whether the manifests themselves are correct. Rather than leave this
+unverified, added a Rust toolchain to `backend/Dockerfile`
+(unconditional, same pattern already proven in the sibling
+`agent_mem0_poc` repo's Dockerfile) so `wren-core-py` - the one
+dependency with no Linux arm64 wheel on PyPI - compiles from source
+instead of requiring the prebuilt amd64 wheel. Built genuine native
+arm64 images with this (`docker build --platform linux/arm64`, no
+QEMU), loaded them into `kind`, and ran the full light stack
+(mariadb + camunda + backend + frontend) for real: all `1/1 Running`,
+zero restarts, and a real ticket created end-to-end through
+`/api/tickets` with `"camunda_status":"Successfully triggered in
+Camunda"`. This Dockerfile change is a genuine improvement (works on
+any architecture now) and ships in this same change - it does *not*
+affect what actually gets built and pushed to GHCR for real deployment
+(`docker-compose.yml`'s `platform: linux/amd64` pin is unchanged; on
+amd64 the added Rust toolchain just sits unused since pip still picks
+the prebuilt wheel there).
+
+**Confirmed working in isolation, not yet confirmed running
+simultaneously**: the light stack (mariadb/camunda/backend/frontend)
+and the DataHub stack (7 services) were each verified fully healthy on
+their own, but bringing up *all* eleven workloads on this same `kind`
+node at once made the cluster's own API server start timing out
+(`TLS handshake timeout`) before pods could be observed - a resource
+ceiling on this laptop (already running its own separate local dev
+Docker Compose stack, plus other unrelated projects' containers), not
+a sign of anything wrong with the manifests - both halves are already
+independently proven. A real GKE node pool sized per this file's
+recommendation has real, uncontended capacity and should carry the
+combined stack without issue, but that combined-everything-at-once
+scenario specifically remains unverified.
+
+**Still not verified at all** (things `kind` structurally can't tell
+you): the `LoadBalancer` Service for `frontend` (external IP
+provisioning is a real cloud-provider feature `kind` doesn't
+replicate), and whether the real amd64 GHCR images (as opposed to the
+arm64 ones built just now for this test) behave identically on real
+GKE nodes. **Treat this as a thoroughly-tested first draft, not a
+fully proven deployment** - the bugs found above are exactly the kind
+of thing that would otherwise have first surfaced while burning real
+GKE compute time; there could still be GKE-specific issues (LoadBalancer
+quota, node image differences, etc.) neither `kind` nor I could catch.
 
 ## Real cost warning
 

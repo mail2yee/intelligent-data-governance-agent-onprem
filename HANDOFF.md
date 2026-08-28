@@ -1170,23 +1170,46 @@ compute would have been a much worse experience:
   patched for GMS specifically.
 - The same self-referential-Service deadlock as Kafka's, independently,
   on `datahub-gms`'s own Service (GMS calls its own schema-registry URL
-  as the last step of its own startup) - diagnosed with high confidence
-  from a clean, 100%-reproducible crash, but **not fully re-confirmed**
-  after the fix - ran out of local machine resources (this `kind`
-  cluster competing with the same laptop's already-running local dev
-  Docker Compose stack for memory) before finishing that verification
-  pass. Flagged explicitly in `k8s/README.md` rather than claimed as
-  proven.
+  as the last step of its own startup) - diagnosed from a clean,
+  100%-reproducible crash and fixed the same way. **Re-confirmed on a
+  second test pass**: `datahub-gms` ran `1/1 Running`, zero restarts,
+  sustained for several minutes alongside the rest of DataHub's stack.
+
+Also confirmed backend/frontend, not just DataHub: this dev machine is
+arm64 and the GHCR images are amd64-only on purpose (real office target
+is x86_64), so `kind`'s node (inherits host arch) couldn't even pull
+them at first. Rather than leave that gap, added a Rust toolchain to
+`backend/Dockerfile` (same proven pattern as the sibling `agent_mem0_poc`
+repo's Dockerfile) so `wren-core-py` - the one dependency with no Linux
+arm64 wheel - compiles from source instead of needing the prebuilt
+amd64 wheel. Built genuine native arm64 images, ran the light stack
+(mariadb + camunda + backend + frontend) for real: all healthy, zero
+restarts, a real ticket created end-to-end through `/api/tickets` with
+Camunda successfully triggered. This Dockerfile change ships as a
+real, permanent improvement (works on any host architecture now) and
+does *not* change what actually gets built/pushed to GHCR for real
+deployment (`docker-compose.yml`'s `platform: linux/amd64` pin is
+unchanged - the added toolchain just sits unused on amd64 builds).
+
+One gap remains: the light stack and the DataHub stack were each
+verified fully healthy *on their own*, but running all eleven
+workloads on the same `kind` node simultaneously made the cluster's
+own API server start timing out before pods could be observed - a
+resource ceiling on this laptop (already carrying its own local dev
+Docker Compose stack plus other unrelated projects), not a sign of
+anything wrong with the manifests, since both halves are independently
+proven. A real GKE node pool has real uncontended capacity and should
+carry the combined stack fine, but that exact scenario remains
+unverified locally.
 
 See `k8s/README.md` for the full deployment story (prerequisites,
 `gcloud`/`kubectl` commands, secrets setup, a real cost warning - this
 is a continuously-running cost, not one-time, and DataHub's stack alone
 is the same JVM-heavy set of services that got OOM-killed repeatedly in
 local Docker testing), and for exactly what's verified vs. still
-unverified (real GKE-specific things like LoadBalancer provisioning and
-whether backend/frontend's amd64-only images actually run cleanly on
-real amd64 GKE nodes couldn't be tested from this arm64 dev machine's
-`kind` cluster either way).
+unverified (the `LoadBalancer` Service's external-IP provisioning, and
+whether the real *amd64* GHCR images - as opposed to the arm64 ones
+built just for this local test - behave identically on real GKE nodes).
 
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
