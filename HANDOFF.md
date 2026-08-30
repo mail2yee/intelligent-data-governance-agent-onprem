@@ -1211,6 +1211,92 @@ unverified (the `LoadBalancer` Service's external-IP provisioning, and
 whether the real *amd64* GHCR images - as opposed to the arm64 ones
 built just for this local test - behave identically on real GKE nodes).
 
+## GKE demo actually deployed live - classic Ingress abandoned for Gateway API (2026-08-30)
+
+Took the `k8s/` manifests from local-only validation to a real,
+running GKE cluster (`data-governance-agent` project, `dgo-demo`
+cluster, `asia-east1-a`) - a genuinely public, IAP-restricted demo at
+`https://idg-ai.yeeshen.com`, confirmed working by actually logging in
+through it, not just curl.
+
+**Real bugs found only visible against real GCP infrastructure**
+(`kind`'s local-path provisioner never surfaced these):
+- `datahub-kafka`/`datahub-opensearch` run as non-root uid 1000 and
+  can't write to a real GCE Persistent Disk (mounts root-owned by
+  default) - fixed with `securityContext.fsGroup: 1000` on both.
+- Real PDs are freshly-formatted ext4, which always creates a
+  `lost+found` dir at the volume root - Kafka's LogManager fatal-errors
+  on any directory that isn't a topic-partition. Fixed with `rm -rf
+  .../lost+found` at kafka's own startup.
+- The GHCR `backend:latest` image was stale (predated the MariaDB
+  migration, `ModuleNotFoundError: asyncmy` on startup) - simply
+  forgot to rebuild+push after that migration landed. Rebuilt and
+  re-pushed.
+
+**The big one: classic GKE Ingress (`networking.k8s.io/v1 Ingress` +
+`ManagedCertificate` + `BackendConfig`) never worked at all**, on two
+separate clusters, including one created fresh with `HttpLoadBalancing`
+explicitly enabled from creation. The Ingress-GCE controller (runs
+inside GKE's managed control plane, not an inspectable pod) never
+processed the Ingress object even once - zero sync events, zero NEG
+ever created, confirmed across `kubectl describe`, `gcloud compute
+network-endpoint-groups list`, and Cloud Logging, with no actionable
+error anywhere. A plain `type: LoadBalancer` Service (different
+codepath) worked instantly on the same cluster the whole time,
+confirming the app itself and the cluster's basic networking were fine
+- this was specifically the legacy Ingress-GCE controller being
+broken, not a manifest bug or GCP account/permissions issue.
+
+**Fixed by switching to Gateway API** - `gateway.networking.k8s.io/v1
+Gateway` + `HTTPRoute` (a genuinely different controller/codepath, and
+Google's own current recommended direction for GKE) worked on the
+first real attempt. This meant re-deriving the TLS and IAP mechanisms
+too, since they're different under Gateway API:
+- TLS: **Certificate Manager** (`gcloud certificate-manager
+  certificates/maps/maps entries create`, referenced via the Gateway's
+  `networking.gke.io/certmap` annotation) - NOT the `ManagedCertificate`
+  CRD, which only classic Ingress understands.
+- IAP: `networking.gke.io/v1 GCPBackendPolicy` targeting the Service
+  directly - NOT `BackendConfig`, which is also Ingress-only. Hit one
+  real gotcha here: `GCPBackendPolicy` wants the OAuth client ID inline
+  in the spec and the referenced Secret to contain **only** the
+  `client_secret` key - `"must have exactly 1 key-value pair in field
+  Data, found 2"` when the Secret still had both `client_id`/
+  `client_secret` keys from copying the old `BackendConfig`-era secret
+  shape. Confirmed the correct shape via `kubectl explain
+  gcpbackendpolicy.spec.default.iap` against the live CRD rather than
+  guessing.
+
+`12-managed-cert.yaml`, `13-backendconfig.yaml`, `14-ingress.yaml` from
+the abandoned classic-Ingress attempt are deleted entirely, replaced by
+`15-gateway.yaml` and `16-gcp-backend-policy.yaml`.
+
+**Two more real snags after Gateway API itself started working**, both
+now documented in `k8s/README.md`'s "Authorize who can actually log in
+via IAP" section:
+1. `Error 400: redirect_uri_mismatch` on Google's own login page - the
+   OAuth client's Authorized redirect URI (set up manually in the
+   Console per the earlier classic-Ingress attempt's instructions)
+   didn't exactly match `https://iap.googleapis.com/v1/oauth/clientIds/
+   <CLIENT_ID>:handleRedirect` character-for-character.
+2. Login succeeding but IAP showing "You don't have access" even for an
+   account already granted `roles/iap.httpsResourceAccessor` - the
+   `gcloud iap web add-iam-policy-binding` from the earlier
+   classic-Ingress attempt was bound to that attempt's `k8s1-...`
+   backend service name, not the new `gkegw1-...`-named one Gateway API
+   actually created. Re-ran the binding against
+   `gcloud compute backend-services list`'s real current name and it
+   resolved immediately.
+
+`k8s/README.md` was rewritten end-to-end to reflect this - it now
+walks through the actual working path (Gateway API, Certificate
+Manager, GCPBackendPolicy, the exact `--addons=HttpLoadBalancing
+--gateway-api=standard` cluster-creation flags) rather than the
+abandoned classic-Ingress plan, and documents both authorization
+gotchas above so a future session doesn't have to rediscover them by
+also burning hours of CLI-only debugging against an opaque GKE
+control-plane component.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

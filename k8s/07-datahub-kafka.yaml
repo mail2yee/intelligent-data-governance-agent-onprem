@@ -22,12 +22,30 @@ spec:
       # See 01-mariadb.yaml's comment - avoids K8s's auto-injected
       # $<SERVICE>_PORT env vars colliding with this app's own vars.
       enableServiceLinks: false
+      # cp-kafka's image runs directly as uid/gid 1000 (appuser), never
+      # root, so it can't chown its own mounted volume the way e.g.
+      # MySQL's entrypoint does. GKE's real PD-backed PersistentVolumes
+      # mount root-owned by default (unlike kind's local-path
+      # provisioner, which didn't hit this) - without fsGroup, the
+      # container gets "permission denied" writing to
+      # /var/lib/kafka/data. Confirmed by testing against a real GKE
+      # cluster (kind never surfaced this).
+      securityContext:
+        fsGroup: 1000
       containers:
         - name: kafka
           image: ghcr.io/mail2yee/cp-kafka:8.3.0
           command: ["/bin/bash", "-c"]
           args:
             - |
+              # GKE's real PersistentDisk-backed volumes are freshly
+              # formatted ext4, which always creates a lost+found dir at
+              # the volume root - Kafka's LogManager scans every entry
+              # under its log dir expecting topic-partition directories
+              # and fatal-errors on anything else. kind's local-path
+              # provisioner never surfaced this (no ext4 formatting step),
+              # confirmed by testing against a real GKE cluster.
+              rm -rf /var/lib/kafka/data/lost+found
               file_path="/var/lib/kafka/data/clusterID"
               if [ ! -f "$file_path" ]; then
                  /bin/kafka-storage random-uuid > "$file_path"

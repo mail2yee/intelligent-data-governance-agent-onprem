@@ -22,6 +22,15 @@ spec:
       # See 01-mariadb.yaml's comment - avoids K8s's auto-injected
       # $<SERVICE>_PORT env vars colliding with this app's own vars.
       enableServiceLinks: false
+      # opensearch's image runs directly as uid/gid 1000 (opensearch
+      # user), never root. GKE's real PD-backed volumes mount
+      # root-owned by default (kind's local-path provisioner didn't hit
+      # this) - without fsGroup, the container gets
+      # AccessDeniedException creating /usr/share/opensearch/data/nodes.
+      # Confirmed by testing against a real GKE cluster (same root
+      # cause as 07-datahub-kafka.yaml's fix).
+      securityContext:
+        fsGroup: 1000
       # OpenSearch's bootstrap checks want this raised - without it the
       # container can fail to start under real (non-Docker-Desktop)
       # Linux kernels, which GKE nodes are. Docker Desktop's VM already

@@ -28,3 +28,4 @@ k8s/backend-secret.env
 
 # OS
 .DS_Store
+k8s/.local-secrets/

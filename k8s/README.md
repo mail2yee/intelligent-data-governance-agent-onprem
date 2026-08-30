@@ -2,9 +2,9 @@
 
 **This is not the air-gapped office target** — see the repo root
 `HANDOFF.md`'s "Why this repo exists" section. This directory exists
-purely so the app can run somewhere with a real public IP, for
-demoing/showing people. It's a from-scratch, hand-written port of
-`docker-compose.yml` + `docker-compose.camunda.yml` +
+purely so the app can run somewhere with a real public URL, restricted
+to a specific person, for demoing. It's a from-scratch, hand-written
+port of `docker-compose.yml` + `docker-compose.camunda.yml` +
 `datahub/docker-compose.datahub.yml` to Kubernetes manifests — every
 stateful service (MariaDB, DataHub's own MySQL/OpenSearch/Kafka) is a
 `StatefulSet` with a `PersistentVolumeClaim`, not just a container with
@@ -14,110 +14,74 @@ like this in K8s — that warning was about the *shortcut* of a plain
 container-with-a-volume, not about self-hosting itself; a proper
 StatefulSet+PVC doesn't have that problem).
 
-## What's actually been verified (and what hasn't)
+**This has been deployed for real** against a live GKE cluster
+(`data-governance-agent` project, `dgo-demo` cluster, `asia-east1-a`),
+not just validated locally — see "What's actually running" below for
+the real, current state and the real bugs hit getting there.
 
-I (Claude) don't have GCP credentials or a real cluster to test
-against, so I installed `kind` (a local single-node K8s cluster running
-in Docker) on this dev machine and applied every manifest for real -
-not just `kubectl apply --dry-run`. That caught five genuine bugs that
-schema/syntax validation alone would have missed, all fixed and
-re-confirmed in the manifests as they stand now:
+## What's actually running
 
-1. **`bitnami/kubectl:1.30` doesn't exist** (Bitnami restructured their
-   tagging, only `latest` and digest tags remain) - switched to
-   `rancher/kubectl:v1.32.13`, which has real version tags.
-2. **That image also has no shell** (`sh: not found`) - the
-   `wait-for-system-update` initContainers were rewritten from a shell
-   polling loop to `kubectl wait --for=condition=complete`, which needs
-   no shell and is the more correct tool for the job anyway.
-3. **Kafka's own listener config referencing the Service name deadlocked
-   at startup** - binding `KAFKA_LISTENERS` to the Service name (ported
-   directly from compose's `hostname: broker` trick, which only worked
-   because the container's own hostname literally was "broker") fails
-   with "Unresolved address" in K8s. Fixed: `KAFKA_LISTENERS` binds
-   `0.0.0.0`, `KAFKA_ADVERTISED_LISTENERS`/`KAFKA_CONTROLLER_QUORUM_VOTERS`
-   use the StatefulSet pod's own stable per-instance DNS name
-   (`datahub-kafka-0.datahub-kafka`) - plus `publishNotReadyAddresses: true`
-   on the Service, since that per-pod DNS entry doesn't exist until
-   the pod is Ready by default, and the broker needs to resolve it
-   *before* it can become Ready (self-referential chicken-and-egg,
-   confirmed by testing - it crash-loops forever without this).
-4. **K8s auto-injects a `$<SERVICE>_PORT` env var for every Service in
-   the namespace into every pod** (legacy Docker-links behavior) -
-   `DATAHUB_GMS_PORT` (this app's own literal `"8080"`) got silently
-   clobbered by K8s's auto-injected `DATAHUB_GMS_PORT=tcp://<ip>:8080`
-   for the `datahub-gms` Service of the same name, crashing GMS's
-   Spring Boot config binder (expected an int, got a URL). Fixed with
-   `enableServiceLinks: false` on every pod in this directory - the
-   general recommended practice for exactly this reason, not just a
-   one-off patch for GMS specifically.
-5. Also applied `publishNotReadyAddresses: true` to the `datahub-gms`
-   Service itself, same root cause as Kafka's - GMS calls back into its
-   own `KAFKA_SCHEMAREGISTRY_URL` (`http://datahub-gms:8080/...`) as
-   the literal last step of its own startup, which needs the Service to
-   route to this not-yet-Ready pod. **Confirmed fixed on a second test
-   pass**: `datahub-gms` ran `1/1 Running`, zero restarts, sustained
-   across 5+ checks over several minutes, alongside the rest of
-   DataHub's stack (mysql, opensearch, kafka, the system-update Job,
-   actions, frontend) all healthy at the same time.
+- **11 app workloads** (mariadb, camunda, backend, frontend, DataHub's
+  7 services) all `1/1 Running`, zero restarts, confirmed stable.
+- **Public URL**: `https://idg-ai.yeeshen.com`, real Google-managed TLS
+  (Certificate Manager, `ACTIVE` status), restricted via **Identity-Aware
+  Proxy** to a single Google account (`mail2yee@gmail.com`) - anyone
+  else hitting the URL gets Google's own login wall, never reaches the
+  app. **Confirmed end-to-end by actually logging in through it**, not
+  just checked via `curl` - the full flow (HTTPS → Google login →
+  IAP → app) works.
+- **LLM**: Anthropic's OpenAI-compatible endpoint
+  (`https://api.anthropic.com/v1`, model `claude-sonnet-5`) - this
+  cluster has no route back to the office network or a home Ollama
+  instance, so a real internet-reachable LLM was required for AI-mode
+  search to actually work rather than always hitting the
+  graceful-fallback path.
 
-**Also confirmed, backend/frontend included**: this Mac is arm64
-(Apple Silicon) and the GHCR images are built amd64-only on purpose
-(the real office target is x86_64) - `kind`'s node inherits the host
-architecture, so those images fail outright there
-(`ImagePullBackOff: no match for platform in manifest`), unrelated to
-whether the manifests themselves are correct. Rather than leave this
-unverified, added a Rust toolchain to `backend/Dockerfile`
-(unconditional, same pattern already proven in the sibling
-`agent_mem0_poc` repo's Dockerfile) so `wren-core-py` - the one
-dependency with no Linux arm64 wheel on PyPI - compiles from source
-instead of requiring the prebuilt amd64 wheel. Built genuine native
-arm64 images with this (`docker build --platform linux/arm64`, no
-QEMU), loaded them into `kind`, and ran the full light stack
-(mariadb + camunda + backend + frontend) for real: all `1/1 Running`,
-zero restarts, and a real ticket created end-to-end through
-`/api/tickets` with `"camunda_status":"Successfully triggered in
-Camunda"`. This Dockerfile change is a genuine improvement (works on
-any architecture now) and ships in this same change - it does *not*
-affect what actually gets built and pushed to GHCR for real deployment
-(`docker-compose.yml`'s `platform: linux/amd64` pin is unchanged; on
-amd64 the added Rust toolchain just sits unused since pip still picks
-the prebuilt wheel there).
+## The real routing story: classic Ingress is abandoned, this uses Gateway API
 
-**Confirmed working in isolation, not yet confirmed running
-simultaneously**: the light stack (mariadb/camunda/backend/frontend)
-and the DataHub stack (7 services) were each verified fully healthy on
-their own, but bringing up *all* eleven workloads on this same `kind`
-node at once made the cluster's own API server start timing out
-(`TLS handshake timeout`) before pods could be observed - a resource
-ceiling on this laptop (already running its own separate local dev
-Docker Compose stack, plus other unrelated projects' containers), not
-a sign of anything wrong with the manifests - both halves are already
-independently proven. A real GKE node pool sized per this file's
-recommendation has real, uncontended capacity and should carry the
-combined stack without issue, but that combined-everything-at-once
-scenario specifically remains unverified.
+The original plan was `networking.k8s.io/v1 Ingress` (`ingressClassName:
+gce`) + a `networking.gke.io/v1 ManagedCertificate` + a
+`cloud.google.com/v1 BackendConfig` for IAP - the traditional GKE HTTP(S)
+load balancing stack. **This never worked, on two separate clusters**:
+the legacy Ingress-GCE controller never processed the Ingress object at
+all - zero sync events, zero NEG ever created, even on a cluster created
+fresh with the `HttpLoadBalancing` addon explicitly enabled from
+creation. This is a GKE control-plane issue with no CLI-visible
+diagnostics (the controller itself runs inside Google's managed control
+plane, not as an inspectable pod) - not a manifest bug, confirmed by a
+plain L4 `type: LoadBalancer` Service working perfectly on the same
+cluster the whole time.
 
-**Still not verified at all** (things `kind` structurally can't tell
-you): the `LoadBalancer` Service for `frontend` (external IP
-provisioning is a real cloud-provider feature `kind` doesn't
-replicate), and whether the real amd64 GHCR images (as opposed to the
-arm64 ones built just now for this test) behave identically on real
-GKE nodes. **Treat this as a thoroughly-tested first draft, not a
-fully proven deployment** - the bugs found above are exactly the kind
-of thing that would otherwise have first surfaced while burning real
-GKE compute time; there could still be GKE-specific issues (LoadBalancer
-quota, node image differences, etc.) neither `kind` nor I could catch.
+**Fixed by switching to Gateway API** (`gateway.networking.k8s.io/v1
+Gateway` + `HTTPRoute`, GKE's own current recommended direction, a
+genuinely different controller/codepath from the broken one) - this
+worked immediately on the first attempt. The three files this
+architecture actually uses:
 
-## Real cost warning
+- **`15-gateway.yaml`** - the `Gateway` (bound to the pre-reserved
+  static IP, TLS via Certificate Manager) and the `HTTPRoute` (routes
+  `idg-ai.yeeshen.com` to the `frontend` Service).
+- **`16-gcp-backend-policy.yaml`** - `networking.gke.io/v1
+  GCPBackendPolicy`, the Gateway-API-native way to turn on IAP (replaces
+  `BackendConfig`, which is Ingress-only).
+- TLS itself is **Certificate Manager** (a separate GCP resource, not
+  the `ManagedCertificate` CRD, which only classic Ingress understands)
+  - see "Setup" below for the exact `gcloud certificate-manager`
+  commands.
 
-This is not a one-time cost. A GKE cluster sized for this stack (see
-node sizing below) runs continuously for as long as it exists — DataHub
-alone (Kafka + OpenSearch + MySQL + GMS + frontend + actions) is
-genuinely heavy, the same JVM-heavy stack that got OOM-killed multiple
-times in local Docker testing (see `HANDOFF.md`). **Delete the cluster
-when you're not actively demoing it** (see "Tearing down" below) unless
-you're fine with the ongoing bill.
+`12-managed-cert.yaml`, `13-backendconfig.yaml`, and `14-ingress.yaml`
+existed briefly during the abandoned classic-Ingress attempt and have
+been deleted from this directory entirely - if you see references to
+them anywhere (old commit messages, etc.), they're dead history, not
+something to recreate.
+
+**One non-obvious GCPBackendPolicy gotcha**: it wants the OAuth client
+ID inline in the policy spec and the referenced Secret to contain
+**only** the `client_secret` key - not both `client_id`/`client_secret`
+together the way `BackendConfig` wanted. Confirmed via
+`kubectl explain gcpbackendpolicy.spec.default.iap` against the live
+CRD (not assumed) after hitting `"must have exactly 1 key-value pair in
+field Data, found 2"` with a two-key secret.
 
 ## 1. Prerequisites (you do this part - I can't touch billing/OAuth)
 
@@ -128,62 +92,146 @@ you're fine with the ongoing bill.
 4. `gcloud config set project <your-project-id>`
 5. Enable the required APIs:
    ```bash
-   gcloud services enable container.googleapis.com compute.googleapis.com
+   gcloud services enable container.googleapis.com compute.googleapis.com \
+     iap.googleapis.com cloudresourcemanager.googleapis.com \
+     certificatemanager.googleapis.com
+   ```
+6. **A real domain you control**, with the ability to add an A record.
+   IAP requires HTTPS, and a Google-managed cert needs DNS actually
+   pointed at the reserved static IP before Google will issue one - see
+   step 4 below for the exact order this has to happen in.
+7. **gke-gcloud-auth-plugin** - `kubectl` needs this to authenticate
+   against GKE:
+   ```bash
+   gcloud components install gke-gcloud-auth-plugin
+   export PATH="$(gcloud info --format='value(installation.sdk_root)')/bin:$PATH"
+   # add that export to ~/.zshrc to make it permanent
    ```
 
-## 2. Create the cluster
+## 2. Reserve a static IP
 
-Two options - pick one:
+```bash
+gcloud compute addresses create dgo-demo-ip --global
+gcloud compute addresses describe dgo-demo-ip --global --format="value(address)"
+```
+Point your domain's A record at this IP now (see step 4) - DNS
+propagation can take a few minutes, so start it early. **Use "DNS
+only"/unproxied mode if your DNS provider offers a proxy option (e.g.
+Cloudflare)** - a proxy would make Google's domain-ownership
+verification see the proxy's IP instead of this one, and the managed
+certificate will get stuck in `FAILED_NOT_VISIBLE` forever.
 
-**GKE Standard** (you manage node pool sizing, generally cheaper per
-resource but more to think about):
+## 3. Set up IAP (manual - the automation API for this is deprecated/shut down)
+
+`gcloud iap oauth-brands` is deprecated and the underlying IAP OAuth
+Admin API is being shut down by Google (announced shutdown as of early
+2026) - this genuinely has to be done by hand in the Console:
+
+1. **OAuth consent screen**: https://console.cloud.google.com/apis/credentials/consent
+   - User Type: External. Fill in app name + support/contact email.
+     Add your own Google account under **Test users**.
+2. **OAuth client**: https://console.cloud.google.com/apis/credentials
+   → Create Credentials → OAuth client ID → Web application. Create it
+   first with no redirect URI, copy the resulting **Client ID** and
+   **Client Secret**, then come back and add this as an Authorized
+   redirect URI (substituting your real client ID):
+   ```
+   https://iap.googleapis.com/v1/oauth/clientIds/<CLIENT_ID>:handleRedirect
+   ```
+3. Save the client ID/secret somewhere local and **gitignored**
+   (`k8s/.local-secrets/` is already in `.gitignore` for exactly this) -
+   you'll need the secret (not the ID) to create a K8s Secret in step 5,
+   and the ID goes inline in `16-gcp-backend-policy.yaml`.
+
+## 4. Create the cluster
+
+**The `HttpLoadBalancing` addon and Gateway API must both be enabled** -
+without them, nothing here can create a real load balancer:
 ```bash
 gcloud container clusters create dgo-demo \
-  --zone=us-central1-a \
-  --num-nodes=3 \
+  --zone=asia-east1-a \
+  --num-nodes=2 \
   --machine-type=e2-standard-4 \
-  --disk-size=50
+  --disk-size=50 \
+  --spot \
+  --addons=HttpLoadBalancing \
+  --gateway-api=standard
 ```
-3x e2-standard-4 (4 vCPU/16GB each = 12 vCPU/48GB total) comfortably
+2x e2-standard-4 (4 vCPU/16GB each = 8 vCPU/32GB total) comfortably
 covers this stack's combined resource *requests* (~3.9 vCPU / ~8.5Gi
-across every Deployment/StatefulSet below, excluding the one-shot
-system-update Job) with room for GKE's own system pods and request/limit
-headroom. Adjust `--zone`/machine type to whatever's cheapest in your
-region.
+across every Deployment/StatefulSet, excluding the one-shot
+system-update Job). `--spot` cuts compute cost significantly (60-90%)
+in exchange for GCP being able to reclaim the VM with short notice -
+fine for a demo, not for something that needs to survive unattended.
+Adjust `--zone`/machine type/region to whatever's cheapest or closest
+to you.
 
-**GKE Autopilot** (no node pool decisions, pay per pod resource
-request, simpler to reason about, usually similar-to-slightly-higher
-cost for a small cluster like this):
 ```bash
-gcloud container clusters create-auto dgo-demo --region=us-central1
+gcloud container clusters get-credentials dgo-demo --zone=asia-east1-a
 ```
 
-Either way, get `kubectl` pointed at it:
-```bash
-gcloud container clusters get-credentials dgo-demo --zone=us-central1-a  # Standard
-# or --region=us-central1 for Autopilot
-```
+If you already have a cluster without these addons, `gcloud container
+clusters update dgo-demo --zone=... --update-addons=HttpLoadBalancing=ENABLED
+--gateway-api=standard` should work in theory - in practice, toggling
+addons on an existing cluster is exactly what triggered the broken,
+unrecoverable Ingress-GCE controller state described above. If Gateway
+API's own health checks (`kubectl get gatewayclass`,
+`kubectl describe gateway`) show anything stuck or silent the way
+classic Ingress did, don't spend hours debugging it via CLI the way this
+session did - just delete and recreate the cluster. It's a demo
+cluster; there's no state on it worth preserving.
 
-## 3. Secrets (you fill these in - don't commit the real files)
+## 5. Certificate Manager (Gateway API's TLS mechanism - NOT the ManagedCertificate CRD)
+
+```bash
+gcloud certificate-manager certificates create dgo-demo-gw-cert \
+  --domains=<your-domain>
+gcloud certificate-manager maps create dgo-demo-cert-map
+gcloud certificate-manager maps entries create dgo-demo-cert-map-entry \
+  --map=dgo-demo-cert-map --certificates=dgo-demo-gw-cert \
+  --hostname=<your-domain>
+```
+Then edit `15-gateway.yaml`'s `networking.gke.io/certmap` annotation and
+`HTTPRoute`'s `hostnames` to match your actual domain (both currently
+say `idg-ai.yeeshen.com`). Provisioning can take up to ~1 hour after DNS
+actually resolves to the static IP - check status with:
+```bash
+gcloud certificate-manager certificates describe dgo-demo-gw-cert --format="value(managed.state)"
+```
+`ACTIVE` means it's really done; `FAILED_NOT_VISIBLE` almost always
+means DNS isn't pointed at the static IP yet (or is going through a
+proxy - see step 2).
+
+## 6. Secrets (you fill these in - don't commit the real files)
 
 ```bash
 cp k8s/db-secret.env.example k8s/db-secret.env
 cp k8s/backend-secret.env.example k8s/backend-secret.env
-# edit both - see the comments in each for what actually matters
-# (MARIADB_PASSWORD must match between the two files; LLM_BASE_URL
-# needs a real internet-reachable endpoint or AI-mode search will only
-# ever show the graceful-fallback path)
+# edit both - MARIADB_PASSWORD must match between the two files.
+# LLM_BASE_URL needs a real internet-reachable endpoint (this cluster
+# can't reach a home Ollama or the office network) - Anthropic's
+# OpenAI-compatible endpoint (https://api.anthropic.com/v1) is
+# confirmed working, e.g. LLM_MODEL=claude-sonnet-5.
+# CORS_ORIGINS should be https://<your-domain> (not http, not the bare IP).
 ```
 
-Apply the namespace and RBAC first (secrets need the namespace to
-exist), then the secrets themselves:
 ```bash
 kubectl apply -f k8s/00-namespace.yaml
 kubectl create secret generic dgo-db-secret -n dgo --from-env-file=k8s/db-secret.env
 kubectl create secret generic dgo-backend-secret -n dgo --from-env-file=k8s/backend-secret.env
 ```
 
-## 4. Deploy everything
+**IAP secret - note the single-key requirement** (see the gotcha
+above):
+```bash
+kubectl create secret generic iap-oauth-secret -n dgo \
+  --from-literal=client_secret=<your-oauth-client-secret>
+```
+Then edit `16-gcp-backend-policy.yaml`'s `clientID` field to your real
+OAuth client ID (it's fine for this to be inline/committed - client IDs
+aren't secret, only the client secret is).
+
+## 7. Deploy everything
 
 ```bash
 kubectl apply -f k8s/
@@ -206,24 +254,15 @@ initContainers were blocked on that Job) → `datahub-actions` starts →
 DataHub's own stack alone can take several minutes cold-starting (GMS's
 readinessProbe alone allows up to 150s).
 
-## 5. Get the public URL
-
+Then confirm the Gateway actually programmed:
 ```bash
-kubectl get svc -n dgo frontend
-```
-The `EXTERNAL-IP` column is your public URL once it's no longer
-`<pending>` (GCP provisioning a load balancer takes a minute or two).
-Open `http://<EXTERNAL-IP>` in a browser.
-
-**Then go back and fix `CORS_ORIGINS`**: edit `k8s/backend-secret.env`
-with this real external IP, re-create the secret, and restart backend:
-```bash
-kubectl delete secret dgo-backend-secret -n dgo
-kubectl create secret generic dgo-backend-secret -n dgo --from-env-file=k8s/backend-secret.env
-kubectl rollout restart deployment/backend -n dgo
+kubectl get gateway -n dgo dgo-demo-gateway
+# PROGRAMMED should say True, ADDRESS should match your reserved static IP
+kubectl describe gcpbackendpolicy -n dgo frontend-iap-policy
+# look for "Type: Attached, Status: True" in Conditions
 ```
 
-## 6. Seed DataHub's catalog
+## 8. Seed DataHub's catalog
 
 Same script as local dev (`datahub/seed_catalog.py`), just needs GMS
 reachable - port-forward it temporarily rather than exposing it
@@ -234,32 +273,108 @@ DATAHUB_API_URL=http://localhost:18080 python3 datahub/seed_catalog.py
 kill %1  # stop the port-forward
 ```
 
+## 9. Authorize who can actually log in via IAP
+
+Enabling IAP alone blocks everyone - you still need to grant specific
+Google accounts access to get past the login wall. First find the real
+backend service name Gateway API generated (it does NOT use the
+`k8s1-...` naming classic Ingress would have - Gateway API's own names
+look like `gkegw1-<hash>-<namespace>-<service>-<port>-<hash>`):
+```bash
+gcloud compute backend-services list
+```
+Then grant access to that exact name:
+```bash
+gcloud iap web add-iam-policy-binding \
+  --resource-type=backend-services \
+  --service=<the gkegw1-... name from the list above> \
+  --member=user:<email> \
+  --role=roles/iap.httpsResourceAccessor
+```
+**Two real failure modes hit getting this working, in order**:
+1. OAuth login itself failing with `Error 400: redirect_uri_mismatch` -
+   this means the Authorized redirect URI saved on the OAuth client
+   (step 3 above) doesn't exactly match
+   `https://iap.googleapis.com/v1/oauth/clientIds/<CLIENT_ID>:handleRedirect`
+   character-for-character (a stray trailing slash or a forgotten Save
+   click are the usual causes) - fix it in the Console and retry.
+2. Login succeeds but IAP still shows **"You don't have access"** even
+   for an account you already ran `add-iam-policy-binding` for - this
+   means the binding was granted against the *wrong* backend service
+   name (e.g. a stale one from an earlier classic-Ingress attempt, or a
+   guessed `k8s1-...` name). Re-run `gcloud compute backend-services
+   list`, confirm which backend service the Gateway/HTTPRoute is
+   actually using right now, and re-run the binding against that exact
+   name.
+
 ## Tearing down
 
-**Do this when you're done demoing** - see the cost warning above.
+**Do this when you're done demoing** - see the cost warning below.
 ```bash
-gcloud container clusters delete dgo-demo --zone=us-central1-a  # or --region for Autopilot
+gcloud container clusters delete dgo-demo --zone=asia-east1-a
+gcloud compute addresses delete dgo-demo-ip --global
+gcloud certificate-manager maps entries delete dgo-demo-cert-map-entry --map=dgo-demo-cert-map
+gcloud certificate-manager maps delete dgo-demo-cert-map
+gcloud certificate-manager certificates delete dgo-demo-gw-cert
 ```
-This deletes everything including the PersistentVolumeClaims' backing
-disks - there's no data here worth keeping (it's a demo catalog seeded
-from a script, and tickets/approvals created during a demo aren't
-meant to persist). If you want to keep the cluster around cheaper
-between demos instead of deleting it, scale everything to 0 replicas
-(`kubectl scale --replicas=0 -n dgo deployment --all
+Deleting the cluster removes everything including the PersistentVolumeClaims'
+backing disks - there's no data here worth keeping (it's a demo catalog
+seeded from a script, and tickets/approvals created during a demo
+aren't meant to persist). If you want to keep the cluster around
+cheaper between demos instead of deleting it, scale everything to 0
+replicas (`kubectl scale --replicas=0 -n dgo deployment --all
 statefulset --all`) - the persistent disks (and their small ongoing
-cost) stick around, but compute cost drops to ~0.
+cost) stick around, but compute cost drops to ~0. The static IP,
+certificate, and OAuth client are cheap/free to leave alone between
+demos either way.
+
+## Real cost warning
+
+This is not a one-time cost. A GKE cluster sized for this stack runs
+continuously for as long as it exists — DataHub alone (Kafka +
+OpenSearch + MySQL + GMS + frontend + actions) is genuinely heavy, the
+same JVM-heavy stack that got OOM-killed multiple times in local Docker
+testing (see `HANDOFF.md`). **Delete the cluster when you're not
+actively demoing it** unless you're fine with the ongoing bill.
 
 ## What's deliberately different from local dev / office mode
 
 - No `--office`-style config-fallback branch here - this always
   self-hosts everything (Camunda, DataHub, MariaDB), since there's no
   "company's real instance" to fall back to from inside GCP.
+- LLM is a real internet-reachable endpoint (Anthropic), not the local
+  Ollama or company gateway assumption the rest of this repo defaults
+  to - see `backend-secret.env.example`'s comment.
 - DataHub's own UI (`datahub-frontend`, port 9002) is **not** exposed
-  externally by default (`ClusterIP`, not `LoadBalancer`) - it's an
-  internal debugging tool, not part of the public demo surface. Give it
-  a `LoadBalancer` Service (copy `04-frontend.yaml`'s pattern) if you
-  want to browse it directly.
+  externally - it's an internal debugging tool, not part of the public
+  demo surface. Use `kubectl port-forward` if you need to browse it.
 - Camunda has no persistent volume (matches `docker-compose.camunda.yml` -
   it never had one either) - its embedded H2 database is lost on pod
   restart. Fine for a demo; revisit with a real external process-engine
   DB if this needs to survive restarts with in-flight tickets intact.
+- Public access is gated by IAP (Google account allowlist), not a bare
+  public IP - this is meant for a specific person to see, not a general
+  public demo.
+
+## GKE-specific bugs found deploying this for real (beyond the routing story above)
+
+These only showed up against real GCE Persistent Disks - `kind`'s
+local-path provisioner never surfaced them (see the manifest comments
+for the fixes actually applied):
+
+- **`datahub-kafka` and `datahub-opensearch` both run as a non-root
+  UID** (1000) and can't write to a freshly-mounted real PD, which
+  mounts root-owned by default - fixed with `securityContext.fsGroup: 1000`
+  on both StatefulSets.
+- **GCE Persistent Disks are freshly formatted ext4**, which always
+  creates a `lost+found` directory at the volume root - Kafka's
+  LogManager scans every entry expecting topic-partition directories
+  and fatal-errors on anything else. Fixed by `rm -rf
+  /var/lib/kafka/data/lost+found` at the start of the kafka container's
+  startup command.
+- **The GHCR `backend:latest` image was stale** (built before this
+  repo's Postgres→MariaDB migration, missing `asyncmy` entirely,
+  `ModuleNotFoundError` on startup) - rebuilt and re-pushed via `docker
+  compose build backend && docker compose push backend` once this was
+  caught; a reminder to actually rebuild+push after dependency changes
+  before assuming a `:latest` GHCR tag is current.

@@ -1,0 +1,31 @@
+# IAP for Gateway API backends - the Gateway-API-native equivalent of
+# 13-backendconfig.yaml's `BackendConfig.spec.iap` (that resource only
+# applies to classic Ingress, abandoned along with it - see
+# 15-gateway.yaml's comment). Targets the frontend Service directly via
+# targetRef.
+#
+# Unlike BackendConfig (which reads both client_id/client_secret out of
+# one Secret), GCPBackendPolicy wants the client ID inline in the
+# spec and only the secret's *name* pointing at a Secret holding just
+# the client_secret key - confirmed via `kubectl explain
+# gcpbackendpolicy.spec.default.iap` against the live CRD rather than
+# assumed. iap-oauth-secret (see k8s/README.md's manual OAuth client
+# setup) already has both client_id/client_secret keys from the
+# BackendConfig era - only client_secret is actually read here, the
+# extra client_id key alongside it is harmless.
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: frontend-iap-policy
+  namespace: dgo
+spec:
+  targetRef:
+    group: ""
+    kind: Service
+    name: frontend
+  default:
+    iap:
+      enabled: true
+      clientID: "219702475066-j3ctjkuv598qkbtaclctpru1918m3sci.apps.googleusercontent.com"
+      oauth2ClientSecret:
+        name: iap-oauth-secret

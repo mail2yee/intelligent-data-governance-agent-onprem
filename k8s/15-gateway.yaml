@@ -1,0 +1,58 @@
+# Gateway API replaces the classic Ingress + ManagedCertificate +
+# BackendConfig setup (12-managed-cert.yaml, 13-backendconfig.yaml,
+# 14-ingress.yaml) entirely - abandoned after the legacy Ingress-GCE
+# controller (`networking.k8s.io/v1 Ingress` with `ingressClassName:
+# gce`) never processed the Ingress object at all on this cluster, even
+# freshly created with HttpLoadBalancing enabled from the start (zero
+# sync events, zero NEG ever created, confirmed across two separate
+# clusters and multiple addon toggle/recreate attempts - a genuine GKE
+# control-plane issue with no CLI-visible diagnostics, not a manifest
+# bug). Gateway API is a different controller/codepath
+# (networking.gke.io/gateway) and is Google's own current recommended
+# direction for GKE - worth trying specifically because it might not
+# share whatever's broken in the legacy path.
+#
+# TLS here uses Certificate Manager (a separate GCP resource, NOT the
+# `networking.gke.io/v1 ManagedCertificate` CRD that only classic
+# Ingress understands) - created via:
+#   gcloud certificate-manager certificates create dgo-demo-gw-cert \
+#     --domains=idg-ai.yeeshen.com
+#   gcloud certificate-manager maps create dgo-demo-cert-map
+#   gcloud certificate-manager maps entries create dgo-demo-cert-map-entry \
+#     --map=dgo-demo-cert-map --certificates=dgo-demo-gw-cert \
+#     --hostname=idg-ai.yeeshen.com
+# referenced below via the `networking.gke.io/certmap` annotation.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: dgo-demo-gateway
+  namespace: dgo
+  annotations:
+    networking.gke.io/certmap: dgo-demo-cert-map
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  addresses:
+    - type: NamedAddress
+      value: dgo-demo-ip
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: dgo-demo-route
+  namespace: dgo
+spec:
+  parentRefs:
+    - name: dgo-demo-gateway
+  hostnames:
+    - idg-ai.yeeshen.com
+  rules:
+    - backendRefs:
+        - name: frontend
+          port: 80
