@@ -24,6 +24,8 @@ Camunda), and what business logic / UI direction to carry over.
 
 **2026-08-27：資料庫從 Postgres 換成 MariaDB。** 跟漏洞掃描無關（MariaDB 掃出來的數字其實還比 Postgres 差一點），純粹是想要自己完全掌控這顆資料庫，不想接公司那套肥 HA Postgres。`backend/app/db.py`（MySQL/MariaDB 的 VARCHAR 一定要指定長度，跟 Postgres 不一樣，已經全部補上）、WrenAI 的 `connection_profile.json`（`datasource` 改 `mysql`，MariaDB 走 MySQL 協定相容）都已經改完並實測過（真的建表、真的建立票單、真的讓 WrenAI 執行 SQL 查詢）。細節見 `HANDOFF.md`「DB engine switched to MariaDB」。
 
+**2026-08-30：新增 GKE demo 部署，跟公司內網無關，純粹是「給特定人看」用途。** 完整架構搬到 `k8s/` 目錄（`docker-compose.yml`/overlay 的手寫 K8s 版本，StatefulSet+PVC 處理所有有狀態服務），真的部署上一個 GKE cluster，用 Google Identity-Aware Proxy（IAP）限制只有指定的 Google 帳號能連得進去，HTTPS 走 Google-managed 憑證。過程中發現 GKE 舊版 Ingress 控制器整個罷工（連一次同步都沒有，兩個不同 cluster 都一樣，Google 管控平面內部元件、指令行完全查不到原因），改用 Gateway API（Google 現在主推的新架構）才真正跑起來。細節、實際部署步驟、踩過的坑全部寫在 `k8s/README.md`。
+
 **架構：** `docker-compose.yml` + 兩個可選的 overlay 檔案（`docker-compose.camunda.yml`、`datahub/docker-compose.datahub.yml`）——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 讀寫 `mariadb`（:3307，本機自架，無退回機制），也打 `camunda`（本機自架 REST API，:8082，抓不到 image 就退回 config）、DataHub（本機自架 GMS，:18080，同樣抓不到就退回 config），對外打一個內網服務：LLM gateway。完整圖見下面「Architecture」章節。
 
 **程式碼在哪裡：** 後端邏輯全在 `backend/app/`——`main.py` 是所有 HTTP 路由、票單/簽核狀態機、`X-API-Key` 驗證，`chat.py` 是聊天助理（打招呼快速回覆、zero-hallucination 提示詞、LLM 打不通時的本地關鍵字 fallback、`keyword_search()` 一般搜尋模式），`config.py` 集中管理所有環境變數，`db.py` 是資料庫 model，`integrations/` 底下三個檔案分別對應 LLM/Camunda/DataHub 三個外部串接。前端在 `frontend/src/`——`App.jsx` 管全域狀態，`api.js` 是所有後端呼叫（含手刻的 SSE 串流解析），`i18n.js` 管中英文字串，`components/` 底下一個檔案一個 UI 元件。完整逐檔案說明見下面「Code map」章節。
@@ -163,6 +165,15 @@ pytest backend/evals/ -v -s
   `ghcr.io` even though it can't reach Docker Hub or the company's own
   Harbor/Nexus (neither has a Camunda image). See "Getting an image onto
   the air-gapped network" below.
+- **A separate GKE demo deployment exists** (2026-08-30, `k8s/`) —
+  unrelated to the office/air-gapped target above, this is a
+  hand-written K8s port of the same docker-compose stack, deployed for
+  real to a live GKE cluster and restricted via Identity-Aware Proxy to
+  a specific Google account. Real GKE-only bugs (non-root containers vs.
+  real Persistent Disk permissions, a stale GHCR image, and — the big
+  one — the classic Ingress-GCE controller never working at all on two
+  separate clusters, fixed by switching to Gateway API) are documented
+  in `k8s/README.md`, not repeated here.
 
 ## Architecture
 
@@ -482,7 +493,7 @@ datahub/seed_catalog.py     seeds sample dataset entities into a local DataHub i
 scripts/setup-datahub.sh    stands up + seeds a local DataHub instance (own docker quickstart stack)
 scripts/mirror-image-to-ghcr.sh  retags + pushes a public third-party image (Camunda, MariaDB) to this repo's GHCR namespace
 backend/scripts/review_unmatched_queries.py  offline, human-reviewed triage of chat queries that matched nothing
-k8s/                        placeholder for future Kubernetes manifests (not needed yet — Docker is fine for now)
+k8s/                        GKE demo deployment (Gateway API + IAP) - unrelated to the office target, see k8s/README.md
 scripts/collect-debug-log.sh  one-command diagnostics collector, see TESTING_LOG.md
 debug-logs/                 output of the script above, committed for review from home
 docker-compose.yml          local/on-prem multi-container dev setup (mariadb, camunda, backend, frontend)
