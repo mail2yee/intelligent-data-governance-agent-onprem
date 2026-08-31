@@ -1,0 +1,37 @@
+name: capacity_plan
+table_reference:
+  schema: public
+  table: capacity_plan
+columns:
+  - name: id
+    type: integer
+  - name: customer_name
+    type: varchar
+    properties:
+      display_name: 客戶名稱
+  - name: product_node
+    type: varchar
+    properties:
+      display_name: 製程節點
+      description: >
+        Process node, e.g. N5, N7.
+  - name: week_start
+    type: date
+    properties:
+      display_name: 週起始日
+  - name: allocated_capacity
+    type: integer
+    properties:
+      display_name: 配置產能
+      description: >
+        Wafer starts allocated to this customer/node for the week.
+  - name: actual_wafer_starts
+    type: integer
+    properties:
+      display_name: 實際投片數
+  - name: utilization_pct
+    type: numeric
+    properties:
+      display_name: 產能利用率
+      description: >
+        actual_wafer_starts / allocated_capacity, as a percentage.

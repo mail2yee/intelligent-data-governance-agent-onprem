@@ -1,0 +1,9 @@
+schema_version: 2
+name: fab_business_capacity_plan
+catalog: capacity_mgmt
+schema: public
+data_source: postgres
+# Pinned explicitly - see ../project/wren_project.yml's comment for why
+# this matters now that two WrenAI projects coexist. Must match the
+# name entrypoint.sh's `wren profile add` call uses for this project.
+profile: fab-business-capacity-plan

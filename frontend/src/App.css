@@ -806,7 +806,8 @@ h1 {
   margin: 14px 0 6px;
 }
 .dialog textarea,
-.dialog select {
+.dialog select,
+.dialog input[type='text'] {
   width: 100%;
   background: var(--surface-alt);
   border: 1px solid var(--border);
@@ -819,6 +820,43 @@ h1 {
 .dialog textarea {
   height: 84px;
   resize: vertical;
+}
+.query-panel {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.query-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.query-row input {
+  flex: 1;
+}
+.query-result {
+  margin-top: 12px;
+  font-size: 12px;
+}
+.query-result table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.query-result th,
+.query-result td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.query-result-wrap {
+  overflow-x: auto;
+  max-height: 220px;
+  overflow-y: auto;
+  border-radius: 8px;
+}
+.query-error {
+  color: var(--critical);
 }
 .dialog-actions {
   display: flex;

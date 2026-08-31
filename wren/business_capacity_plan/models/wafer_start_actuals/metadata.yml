@@ -1,0 +1,31 @@
+name: wafer_start_actuals
+table_reference:
+  schema: public
+  table: wafer_start_actuals
+columns:
+  - name: id
+    type: integer
+  - name: lot_id
+    type: varchar
+    properties:
+      display_name: 批號
+  - name: customer_name
+    type: varchar
+    properties:
+      display_name: 客戶名稱
+  - name: product_node
+    type: varchar
+    properties:
+      display_name: 製程節點
+  - name: start_date
+    type: date
+    properties:
+      display_name: 投片日期
+  - name: wafer_count
+    type: integer
+    properties:
+      display_name: 晶圓片數
+  - name: fab_line
+    type: varchar
+    properties:
+      display_name: 產線

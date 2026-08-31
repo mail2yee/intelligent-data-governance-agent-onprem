@@ -15,6 +15,18 @@ wren profile add dgo-catalog \
 
 wren context build --path /app/wren_project
 
+# Second, separate WrenAI project/profile (2026-08-31) - the fake
+# business-data connection (see wren/business_capacity_plan/ and
+# app/integrations/business_data.py). Both wren_project.yml files pin
+# an explicit `profile:` name now (see their own comments) specifically
+# so registering a second profile here can never make the first
+# project's engine silently start querying the wrong database.
+wren profile add fab-business-capacity-plan \
+  --from-file /app/wren_business_capacity_plan/connection_profile.json \
+  --no-validate
+
+wren context build --path /app/wren_business_capacity_plan
+
 # Best-effort: deploy the BPMN process to Camunda if it's reachable.
 # `deploy-changed-only=true` makes re-running this on every startup a
 # no-op once the BPMN is already deployed (confirmed against a real

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { streamChat } from './api'
+import { queryProductData, streamChat } from './api'
 
 // Builds a fake fetch Response whose .body behaves enough like a real
 // ReadableStream for streamChat()'s reader.read()/TextDecoder loop -
@@ -137,5 +137,44 @@ describe('streamChat', () => {
     await streamChat('hi', 'en', 'ai', [], { onError: (e) => (error = e) })
 
     expect(error).not.toBeNull()
+  })
+})
+
+describe('queryProductData', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn()
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('posts the question and returns the parsed rows', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ rows: [{ customer_name: 'Acme Semiconductor' }] }),
+    })
+
+    const body = await queryProductData('customer-capacity-allocation', 'which customers?')
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/catalog/customer-capacity-allocation/query',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ question: 'which customers?' }),
+      })
+    )
+    expect(body.rows).toEqual([{ customer_name: 'Acme Semiconductor' }])
+  })
+
+  it('throws with the backend detail message on a non-ok response', async () => {
+    global.fetch.mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ detail: 'this product is not wired to a real data source' }),
+    })
+
+    await expect(queryProductData('other-product', 'x')).rejects.toThrow(
+      'this product is not wired to a real data source'
+    )
   })
 })

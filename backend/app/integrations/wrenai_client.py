@@ -30,11 +30,25 @@ method we don't need - `wren.engine` + `wren.profile` directly is enough.
 One WrenAI project = one physical data source connection (confirmed via
 the PoC's testing) - it cannot itself join across the different databases
 DataHub's catalog entries actually live in (see each entry's db_host/
-db_type). That's why this models the *catalog* (our own Postgres mirror
+db_type). That's why this models the *catalog* (our own MariaDB mirror
 of it) rather than the underlying business databases - this integration
 answers "which data subject matches this need", not "run this analytical
-query against the real data", which is deliberately out of scope (see
-HANDOFF.md's semantic layer notes).
+query against the real data".
+
+2026-08-31: a SECOND, independent WrenAI project (see
+../../../wren/business_capacity_plan/) was added for exactly that
+previously-out-of-scope case - real NL-to-SQL against one fake business
+database (governed by app/integrations/business_data.py's
+PRODUCT_DATA_SOURCES registry plus a ticket-approval check, not just by
+this module). Because one project can only ever hold one connection,
+`_build_engine()` below takes an explicit `project_path` rather than
+reading the module-level WREN_PROJECT_PATH global, so it can build an
+engine against either project. Both projects' wren_project.yml pin an
+explicit `profile:` (see those files' own comments) - required once more
+than one profile is registered in backend/entrypoint.sh, otherwise a
+project with no pinned profile falls back to whichever profile was most
+recently globally activated, which would have made both engines silently
+resolve to the same (wrong) database.
 
 UNCONFIRMED against this repo's actual Docker Compose stack end-to-end -
 smoke-tested locally against a throwaway DuckDB table and a real `wren
@@ -137,19 +151,20 @@ async def sync_catalog(catalog: dict) -> None:
         await session.commit()
 
 
-def _build_engine() -> WrenEngine:
-    manifest = json.loads(_MDL_PATH.read_text(encoding="utf-8"))
+def _build_engine(project_path: Path) -> WrenEngine:
+    mdl_path = project_path / "target" / "mdl.json"
+    manifest = json.loads(mdl_path.read_text(encoding="utf-8"))
     manifest_str = base64.b64encode(json.dumps(manifest).encode("utf-8")).decode()
 
-    _, profile = resolve_profile_for_project(WREN_PROJECT_PATH)
+    _, profile = resolve_profile_for_project(project_path)
     profile = expand_profile_secrets(profile)
     data_source = profile.pop("datasource")
 
     return WrenEngine(manifest_str=manifest_str, data_source=data_source, connection_info=profile)
 
 
-def _execute_sql(sql: str) -> list[dict[str, Any]]:
-    table = _build_engine().query(sql)
+def _execute_sql(sql: str, project_path: Path) -> list[dict[str, Any]]:
+    table = _build_engine(project_path).query(sql)
     return table.to_pylist()
 
 
@@ -159,4 +174,13 @@ async def resolve_matches(sql: str) -> list[dict[str, Any]]:
     loop). Raises if the query is invalid or references anything outside
     the declared MDL - callers should treat that the same as any other
     integration failure in this app (see chat.py's fallback chain)."""
-    return await asyncio.to_thread(_execute_sql, sql)
+    return await asyncio.to_thread(_execute_sql, sql, WREN_PROJECT_PATH)
+
+
+async def resolve_business_query(sql: str, project_path: Path) -> list[dict[str, Any]]:
+    """Same as resolve_matches(), but against a caller-specified WrenAI
+    project - used for real NL-to-SQL against a fake business database
+    (see app/integrations/business_data.py), where the target project
+    depends on which product is being queried rather than always being
+    WREN_PROJECT_PATH."""
+    return await asyncio.to_thread(_execute_sql, sql, project_path)

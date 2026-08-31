@@ -1382,6 +1382,135 @@ more context to work with.
   completely new, unrelated query afterward correctly started with
   empty history instead of dragging the resolved exchange along.
 
+## Real NL-to-SQL against business data (2026-08-31)
+
+Item 2 of the agent wishlist from the previous section - explicitly
+requested next ("第二項"). Two governance/scope decisions were confirmed
+with the user via AskUserQuestion before writing any code, since this
+crosses a real security boundary (previously the app never executed a
+query against real business data at all, only matched catalog metadata
+and handed back connection info for the user's own tools):
+
+- **Must require ticket approval first** (the recommended option, and
+  the one chosen) - querying real data is gated behind the exact same
+  approval workflow that already gates getting connection code for it,
+  not a separate/looser path.
+- **Data source: a fake simulated business database**, not one of the
+  catalog's own fictional `db_host` values (those were never real
+  connections - see `datahub_client.py`'s mock catalog). Postgres was
+  chosen deliberately (not another MariaDB schema) to match
+  `customer-capacity-allocation`'s own declared `db_type: PostgreSQL`
+  and to genuinely prove the pattern generalizes to a different
+  engine/host/credentials than the app's own database, not just a
+  cosmetic choice.
+
+**What was built:**
+
+- `business_data/seed_capacity_mgmt.sql` - fake data for 3 fictional
+  customers (Acme Semiconductor, Nova Photonics, Zenith Circuits)
+  across three tables (`capacity_plan`, `customer_commitment`,
+  `wafer_start_actuals`), matching `customer-capacity-allocation`'s
+  catalog entry (`tables_joined`). Mounted into a new `fab-business-db`
+  Postgres 16 service (`docker-compose.yml`) via
+  `docker-entrypoint-initdb.d/` - runs once, only against an empty
+  volume.
+- A **second, independent WrenAI project**
+  (`wren/business_capacity_plan/`) - WrenAI's own constraint is one
+  project = one physical data source connection (see
+  `wrenai_client.py`'s module docstring), so the existing catalog
+  project couldn't just be pointed at a second database. Declares MDL
+  models for the three real tables above.
+- **A real bug caught before it could cause silent wrong-database
+  queries**, found by reading `wren.profile.resolve_profile_for_project()`'s
+  actual source rather than by testing: a WrenAI project with no
+  `profile:` field pinned in its own `wren_project.yml` falls back to
+  whichever profile was most recently globally activated via
+  `wren profile add --activate`. The pre-existing catalog project had
+  never needed to pin one (only one project ever existed). Simply
+  adding a second `wren profile add` call to `entrypoint.sh` would have
+  made *both* projects silently resolve to whichever profile got
+  registered second - the catalog engine and the business-data engine
+  both querying the same (wrong) database, no error surfaced. Fixed by
+  pinning `profile: dgo-catalog` / `profile: fab-business-capacity-plan`
+  explicitly in both `wren_project.yml` files, each with a comment
+  cross-referencing the other and explaining why. `entrypoint.sh`
+  registers both profiles (only the first uses `--activate`, harmless
+  now that both are pinned) and runs `wren context build` against both
+  project paths.
+- `wrenai_client.py`'s `_build_engine()`/`_execute_sql()` generalized to
+  take a `project_path` parameter instead of hardcoding the module-level
+  `WREN_PROJECT_PATH` - a new `resolve_business_query(sql, project_path)`
+  mirrors `resolve_matches()`'s shape for the second project.
+- **New module `backend/app/integrations/business_data.py`** - the
+  actual design center of this feature:
+  - `PRODUCT_DATA_SOURCES: dict[str, dict]` - a **second, independent
+    governance boundary** beyond the approval check: only a product id
+    listed here (currently just `customer-capacity-allocation`) can
+    ever be queried for real data, no matter what a ticket says. Most
+    catalog products (the other two mock entries) aren't wired to
+    anything real and never will be without an explicit registry entry.
+  - `build_business_sql_prompt()` - same "write ONE SELECT, reply
+    NO_MATCH if nothing fits" contract as `chat.py`'s
+    `build_sql_prompt()`, against the real schema instead of the
+    catalog mirror. Read-only by prompt instruction (no INSERT/UPDATE/
+    DELETE/DDL); the governed WrenAI engine is the actual enforcement
+    layer regardless.
+  - `query_product_data(product_id, question)` - orchestrates prompt ->
+    LLM -> `resolve_business_query()` against the product's registered
+    project path. Raises `NoMatchingDataError` for a legitimate "the
+    question doesn't fit this schema," distinct from an integration
+    failure.
+- **New endpoint `POST /api/catalog/{product_id}/query`** (`main.py`) -
+  enforces both gates server-side, in order: (1) registry membership
+  (400 if absent) - checked first since it needs no DB query; (2) an
+  `APPROVED` ticket whose `products` actually includes this
+  `product_id` (403 otherwise). Deliberately not left to the frontend
+  alone: the pre-existing `/api/catalog/{id}/connection` endpoint does
+  **not** enforce approval server-side (only the frontend hides the
+  button for non-approved tickets) - a known, pre-existing gap this new
+  endpoint was written specifically not to repeat, since this one
+  returns real data rather than just static connection metadata.
+- **Frontend**: a "直接查詢這份資料 / Query this data directly" panel
+  added to `ConnectionCodeDialog.jsx` (already only reachable for
+  approved tickets via `TicketRow.jsx`'s conditional render) - a
+  question input + a dynamically-rendered result table (renders
+  whatever columns the LLM's SQL happened to select, since that's
+  legitimately variable). A 400 ("not wired") is shown as a distinct,
+  expected message rather than a generic error, since two of the three
+  catalog products are in this state by design. New `api.js` function
+  `queryProductData()`.
+- **Tests**: `backend/tests/test_business_data.py` (prompt building,
+  `NoMatchingDataError` on NO_MATCH/empty reply, SQL-fence stripping,
+  correct project routing - all against a mocked LLM/WrenAI, no live
+  infra needed) and new cases in `test_tickets.py` (registry gate,
+  approval gate, rejected-ticket-still-blocks, happy path, empty-result
+  path). Frontend: `api.test.js` (`queryProductData()`'s request shape
+  and error surfacing) and a new `ConnectionCodeDialog.test.jsx` (result
+  table rendering, empty-state message, not-wired message, blank-input
+  guard, state reset on `productId` change). 110 pytest / 43 vitest
+  total, `ruff`/`mypy`/`oxlint` all clean.
+- **Verified live, not just via tests**: rebuilt and ran the actual
+  local stack (`fab-business-db` + rebuilt `backend`/`frontend`
+  images). Confirmed via backend startup logs both WrenAI profiles
+  registered and both `wren context build` runs succeeded (1 model for
+  the catalog project, 3 for the business-data project). Confirmed via
+  `psql` that the seed data actually loaded (9/6/7 rows across the
+  three tables, 3 distinct fake customers). Confirmed via `curl`
+  directly against the running backend: querying before any ticket
+  existed for the product → 403; querying a product not in the
+  registry → 400, regardless of ticket status; creating and fully
+  approving a real ticket for `customer-capacity-allocation`, then
+  querying → 200 with real, LLM-aggregated rows (backend logs show the
+  actual generated SQL, e.g. `SELECT customer_name, AVG(utilization_pct)
+  ... GROUP BY customer_name ORDER BY avg_utilization DESC LIMIT 10` for
+  "哪些客戶的產能利用率最高？"); an unrelated question ("今天台北天氣如何？")
+  correctly returned `{"rows": [], "message": "No matching data found
+  for this question."}` rather than a hallucinated answer. Then drove
+  the same flow through the actual browser UI: opened the connection
+  dialog for the approved ticket, typed a question ("每個客戶的平均投片數量
+  是多少？") into the new panel, and got back a real result table
+  rendered from live rows.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

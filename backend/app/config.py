@@ -68,6 +68,15 @@ class Settings(BaseSettings):
     # docker-compose.yml environment overrides this for the container case.
     wren_project_path: str = "../wren/project"
 
+    # Second WrenAI project (see integrations/business_data.py's
+    # PRODUCT_DATA_SOURCES registry and integrations/wrenai_client.py's
+    # resolve_business_query) - the fake business database used to prove
+    # real NL-to-SQL against actual business data, gated by ticket
+    # approval, rather than just catalog metadata matching. Same
+    # local-dev-vs-Docker path resolution caveat as wren_project_path
+    # above.
+    wren_business_project_path: str = "../wren/business_capacity_plan"
+
     cors_origins: str = "http://localhost:5173"
 
     # Used to pad a ticket's approver list up to a minimum of 3 when the

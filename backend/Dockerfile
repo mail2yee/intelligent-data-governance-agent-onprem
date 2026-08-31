@@ -26,6 +26,11 @@ WORKDIR /app
 # wheel on PyPI, only an sdist - needs MariaDB/MySQL client headers and a
 # C compiler to build. default-libmysqlclient-dev resolves to
 # MariaDB's client library on this Debian base.
+# wrenai[postgres] (psycopg[binary]) is also pulled in - a SECOND,
+# separate WrenAI datasource for the fake business-data connection (see
+# wren/business_capacity_plan/ and
+# app/integrations/business_data.py) - ships prebuilt binary wheels, no
+# extra apt packages needed for this one.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential pkg-config default-libmysqlclient-dev curl \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
@@ -37,6 +42,7 @@ COPY backend/app ./app
 COPY backend/entrypoint.sh .
 RUN chmod +x entrypoint.sh
 COPY wren/project ./wren_project
+COPY wren/business_capacity_plan ./wren_business_capacity_plan
 COPY camunda/data-gov-approval.bpmn ./camunda/data-gov-approval.bpmn
 
 EXPOSE 8000

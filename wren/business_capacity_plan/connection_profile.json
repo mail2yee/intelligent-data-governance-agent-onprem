@@ -1,0 +1,8 @@
+{
+  "datasource": "postgres",
+  "host": "${FAB_BUSINESS_DB_HOST}",
+  "port": "${FAB_BUSINESS_DB_PORT}",
+  "database": "${FAB_BUSINESS_DB_NAME}",
+  "user": "${FAB_BUSINESS_DB_USER}",
+  "password": "${FAB_BUSINESS_DB_PASSWORD}"
+}

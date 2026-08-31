@@ -3,3 +3,14 @@ name: dgo_catalog
 catalog: dgo
 schema: dgo
 data_source: mysql
+# Pinned explicitly (2026-08-31, once a second WrenAI project -
+# ../business_capacity_plan/ - was added) - without this, a project
+# with no pinned profile falls back to whichever profile the global
+# `wren profile add --activate` last activated (see
+# wren.profile.resolve_profile_for_project()'s own resolution order).
+# With two projects both relying on that fallback, whichever profile
+# entrypoint.sh registers SECOND would silently become the active one
+# for BOTH projects - a real risk of the catalog engine and the
+# business-data engine both querying the same (wrong) database. Must
+# match the name entrypoint.sh's `wren profile add` call uses.
+profile: dgo-catalog

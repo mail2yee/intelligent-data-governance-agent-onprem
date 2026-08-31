@@ -71,6 +71,12 @@ export const I18N = {
     slowestSub: (h) => `平均 ${h} 小時`,
     avgSub: (h) => `平均 ${h} 小時`,
     thinking: '思考中',
+    queryTitle: '直接查詢這份資料',
+    queryPlaceholder: '用一句話描述你想查的問題…',
+    queryBtn: '查詢',
+    queryEmpty: '找不到符合這個問題的資料。',
+    queryNotWired: '此資料尚未接上實際資料庫，僅提供連線程式碼。',
+    queryFailed: '查詢失敗，請確認服務是否正常運作。',
   },
   en: {
     appTitle: 'Intelligent Data Governance',
@@ -143,6 +149,12 @@ export const I18N = {
     slowestSub: (h) => `Avg ${h} hrs`,
     avgSub: (h) => `Avg ${h} hrs`,
     thinking: 'Thinking',
+    queryTitle: 'Query this data directly',
+    queryPlaceholder: 'Describe what you want to look up…',
+    queryBtn: 'Query',
+    queryEmpty: 'No matching data found for this question.',
+    queryNotWired: 'This data subject is not connected to a real database yet — connection code only.',
+    queryFailed: 'Query failed — please check the service is running.',
   },
 }
 

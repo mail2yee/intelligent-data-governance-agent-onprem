@@ -45,6 +45,38 @@ services:
       timeout: 5s
       retries: 10
 
+  # Simulates ONE real underlying business database - the kind of thing a
+  # catalog entry's db_host/db_type/db_port/db_schema fields actually
+  # point at in the real company network (see datahub/seed_catalog.py's
+  # customer-capacity-allocation entry: db_type PostgreSQL). This is
+  # deliberately a real, separate Postgres instance (not another schema
+  # in mariadb above) - proves the NL-to-SQL-against-real-data pattern
+  # (2026-08-31, see HANDOFF.md's "Real NL-to-SQL against business data"
+  # section) actually generalizes to a different engine/host/credentials,
+  # not just the app's own database. Fake data only, wired to exactly one
+  # catalog product for now (customer-capacity-allocation) - see
+  # backend/app/integrations/business_data.py's PRODUCT_DATA_SOURCES
+  # registry, which is also the actual governance boundary: a product not
+  # listed there can never be queried for real data, no matter what a
+  # ticket's approval status says.
+  fab-business-db:
+    image: ghcr.io/mail2yee/postgres:16-alpine
+    platform: linux/amd64
+    environment:
+      POSTGRES_USER: fab_ops
+      POSTGRES_PASSWORD: ${FAB_BUSINESS_DB_PASSWORD:-fab_ops}
+      POSTGRES_DB: capacity_mgmt
+    ports:
+      - "5433:5432"
+    volumes:
+      - fabbusinessdbdata:/var/lib/postgresql/data
+      - ./business_data/seed_capacity_mgmt.sql:/docker-entrypoint-initdb.d/seed_capacity_mgmt.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fab_ops -d capacity_mgmt"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   backend:
     # image + build both set on purpose: `docker compose build` (at home,
     # with internet access) tags the result as this ghcr.io name, then
@@ -77,6 +109,17 @@ services:
       MARIADB_PASSWORD: ${MARIADB_PASSWORD:-dgo}
       MARIADB_DATABASE: dgo
       WREN_PROJECT_PATH: /app/wren_project
+      WREN_BUSINESS_PROJECT_PATH: /app/wren_business_capacity_plan
+      # Read by wren/business_capacity_plan/connection_profile.json - a
+      # SECOND, separate WrenAI project/connection (see
+      # backend/app/integrations/business_data.py), never mixed with the
+      # catalog-matching one above. Container-network host/port, not the
+      # host-mapped 5433 (that's only for connecting from outside Docker).
+      FAB_BUSINESS_DB_HOST: fab-business-db
+      FAB_BUSINESS_DB_PORT: "5432"
+      FAB_BUSINESS_DB_NAME: capacity_mgmt
+      FAB_BUSINESS_DB_USER: fab_ops
+      FAB_BUSINESS_DB_PASSWORD: ${FAB_BUSINESS_DB_PASSWORD:-fab_ops}
       # No CAMUNDA_BASE_URL/DATAHUB_API_URL override here on purpose -
       # deliberately left to fall through to backend/.env's own value
       # (loaded via env_file above) unless docker-compose.camunda.yml /
@@ -90,6 +133,8 @@ services:
       - "8000:8000"
     depends_on:
       mariadb:
+        condition: service_healthy
+      fab-business-db:
         condition: service_healthy
 
   frontend:
@@ -118,3 +163,4 @@ services:
 
 volumes:
   mariadbdata:
+  fabbusinessdbdata:

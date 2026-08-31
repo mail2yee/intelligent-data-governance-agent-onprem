@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 from .chat import run_chat
 from .config import settings
 from .db import Approval, Ticket, async_session, init_db
-from .integrations import camunda_client, datahub_client
+from .integrations import business_data, camunda_client, datahub_client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("dgo")
@@ -76,6 +76,53 @@ async def get_connection_meta(product_id: str):
         "db_port": item.get("db_port", ""),
         "db_schema": item.get("db_schema", ""),
     }
+
+
+@api_router.post("/api/catalog/{product_id}/query")
+async def query_product_data(product_id: str, request: Request):
+    """Real NL-to-SQL against a product's actual business data (see
+    integrations/business_data.py's module docstring for the full design
+    rationale). Two server-side gates, both required, checked in this
+    order (cheapest/no-DB-query first):
+
+    1. Registry membership (PRODUCT_DATA_SOURCES) - a product not wired
+       to a real data source can never be queried, regardless of ticket
+       status. Most catalog products aren't wired yet (only
+       customer-capacity-allocation is, for now).
+    2. An APPROVED ticket that actually covers this product_id must
+       exist. Deliberately enforced here, not just left to the frontend
+       hiding the UI for it (ConnectionCodeDialog.jsx only shows this
+       for ticket.status === 'APPROVED' tickets, but that's not a
+       security boundary by itself - unlike the pre-existing
+       /connection endpoint above, which does NOT enforce this
+       server-side, this endpoint returns real data and must not repeat
+       that gap).
+    """
+    if product_id not in business_data.PRODUCT_DATA_SOURCES:
+        raise HTTPException(
+            status_code=400, detail="this product is not wired to a real data source"
+        )
+
+    payload = await request.json()
+    question = payload.get("question", "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    async with async_session() as session:
+        result = await session.execute(select(Ticket).where(Ticket.status == "APPROVED"))
+        tickets = result.scalars().all()
+    if not any(product_id in t.products for t in tickets):
+        raise HTTPException(
+            status_code=403,
+            detail="no approved ticket covers this product - request and get approval first",
+        )
+
+    try:
+        rows = await business_data.query_product_data(product_id, question)
+    except business_data.NoMatchingDataError:
+        return {"rows": [], "message": "No matching data found for this question."}
+
+    return {"rows": rows}
 
 
 @api_router.post("/api/chat")

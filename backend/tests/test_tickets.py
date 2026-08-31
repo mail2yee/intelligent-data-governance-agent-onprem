@@ -354,3 +354,102 @@ async def test_connection_meta_known_product(client, monkeypatch):
     res = await client.get("/api/catalog/p1/connection")
     assert res.status_code == 200
     assert res.json() == {"db_type": "PostgreSQL", "db_host": "h", "db_port": "5432", "db_schema": "s"}
+
+
+# --- POST /api/catalog/{product_id}/query -----------------------------
+# Two independent server-side gates (see main.py's query_product_data()
+# docstring and business_data.py's module docstring): registry
+# membership and an APPROVED ticket that actually covers the product.
+# "customer-capacity-allocation" is the one real entry in
+# business_data.PRODUCT_DATA_SOURCES - used below as the "wired" product;
+# any other id exercises the "not wired" 400.
+
+
+async def _approve_ticket_for(client, monkeypatch, product_id, owner="a@example.com"):
+    await _mock_catalog(monkeypatch, {product_id: {"id": product_id, "owner": owner}})
+    await _skip_camunda(monkeypatch)
+    res = await client.post(
+        "/api/tickets", json={"products": [product_id], "objective": "t", "purpose": "PoC"}
+    )
+    ticket_id = res.json()["ticket_id"]
+    owners = (await client.get("/api/tickets")).json()[0]["owners"]
+    for o in owners:
+        await client.post(
+            f"/api/tickets/{ticket_id}/approvals",
+            json={"owner_email": o, "decision": "Approve", "reason": ""},
+        )
+    return ticket_id
+
+
+async def test_query_unwired_product_returns_400(client):
+    res = await client.post("/api/catalog/move-forecast-summary/query", json={"question": "x"})
+    assert res.status_code == 400
+
+
+async def test_query_wired_product_without_approved_ticket_returns_403(client):
+    res = await client.post(
+        "/api/catalog/customer-capacity-allocation/query", json={"question": "which customers?"}
+    )
+    assert res.status_code == 403
+
+
+async def test_query_missing_question_returns_400(client, monkeypatch):
+    await _approve_ticket_for(client, monkeypatch, "customer-capacity-allocation")
+    res = await client.post("/api/catalog/customer-capacity-allocation/query", json={"question": "  "})
+    assert res.status_code == 400
+
+
+async def test_query_with_approved_ticket_returns_rows(client, monkeypatch):
+    await _approve_ticket_for(client, monkeypatch, "customer-capacity-allocation")
+
+    async def _fake_query(product_id, question):
+        assert product_id == "customer-capacity-allocation"
+        assert question == "which customers?"
+        return [{"customer_name": "Acme Semiconductor"}]
+
+    monkeypatch.setattr("app.main.business_data.query_product_data", _fake_query)
+
+    res = await client.post(
+        "/api/catalog/customer-capacity-allocation/query", json={"question": "which customers?"}
+    )
+    assert res.status_code == 200
+    assert res.json() == {"rows": [{"customer_name": "Acme Semiconductor"}]}
+
+
+async def test_query_returns_empty_rows_on_no_matching_data(client, monkeypatch):
+    await _approve_ticket_for(client, monkeypatch, "customer-capacity-allocation")
+
+    from app.integrations.business_data import NoMatchingDataError
+
+    async def _fake_query(product_id, question):
+        raise NoMatchingDataError(question)
+
+    monkeypatch.setattr("app.main.business_data.query_product_data", _fake_query)
+
+    res = await client.post(
+        "/api/catalog/customer-capacity-allocation/query", json={"question": "weather today?"}
+    )
+    assert res.status_code == 200
+    assert res.json()["rows"] == []
+
+
+async def test_query_rejected_ticket_does_not_grant_access(client, monkeypatch):
+    await _mock_catalog(
+        monkeypatch, {"customer-capacity-allocation": {"id": "customer-capacity-allocation", "owner": "a@example.com"}}
+    )
+    await _skip_camunda(monkeypatch)
+    res = await client.post(
+        "/api/tickets",
+        json={"products": ["customer-capacity-allocation"], "objective": "t", "purpose": "PoC"},
+    )
+    ticket_id = res.json()["ticket_id"]
+    owners = (await client.get("/api/tickets")).json()[0]["owners"]
+    await client.post(
+        f"/api/tickets/{ticket_id}/approvals",
+        json={"owner_email": owners[0], "decision": "Reject", "reason": "no"},
+    )
+
+    res = await client.post(
+        "/api/catalog/customer-capacity-allocation/query", json={"question": "which customers?"}
+    )
+    assert res.status_code == 403

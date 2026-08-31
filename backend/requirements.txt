@@ -5,5 +5,5 @@ asyncmy
 httpx
 pydantic-settings
 python-dotenv
-wrenai[mysql]
+wrenai[mysql,postgres]
 opencc-python-reimplemented

@@ -30,6 +30,23 @@ export async function getConnectionMeta(productId) {
   return res.json()
 }
 
+// 2026-08-31: NL-to-SQL against a product's real business data (see
+// backend/app/integrations/business_data.py's module docstring).
+// Backend enforces both the registry-membership and approved-ticket
+// gates server-side - a 400/403 here means one of those, not a network
+// failure, so callers should surface res.json().detail rather than a
+// generic error.
+export async function queryProductData(productId, question) {
+  const res = await fetch(`/api/catalog/${encodeURIComponent(productId)}/query`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ question }),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(body.detail || 'HTTP ' + res.status)
+  return body
+}
+
 export async function createTicket({ products, objective, purpose }) {
   const res = await fetch('/api/tickets', {
     method: 'POST',

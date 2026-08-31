@@ -1,0 +1,31 @@
+name: customer_commitment
+table_reference:
+  schema: public
+  table: customer_commitment
+columns:
+  - name: id
+    type: integer
+  - name: customer_name
+    type: varchar
+    properties:
+      display_name: 客戶名稱
+  - name: commitment_quarter
+    type: varchar
+    properties:
+      display_name: 承諾季度
+      description: >
+        e.g. "2026-Q3".
+  - name: committed_volume
+    type: integer
+    properties:
+      display_name: 承諾投片量
+  - name: confirmed_volume
+    type: integer
+    properties:
+      display_name: 已確認投片量
+  - name: status
+    type: varchar
+    properties:
+      display_name: 狀態
+      description: >
+        "Confirmed" or "Tentative".

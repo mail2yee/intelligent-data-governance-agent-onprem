@@ -27,7 +27,14 @@ things left off.
   8/Zeebe assumption) and DataHub (GraphQL) integrations with graceful
   fallback to mocks on failure, plus WrenAI (embedded Python library, not
   a service) as a zero-hallucination semantic layer for chat.py's
-  data-subject matching.
+  data-subject matching. **Two independent WrenAI projects** now exist
+  (2026-08-31, since one project = one physical connection):
+  `wren/project` (the catalog mirror, unchanged) and
+  `wren/business_capacity_plan` (a fake business Postgres DB, for real
+  governed NL-to-SQL gated by ticket approval - see
+  `backend/app/integrations/business_data.py` and HANDOFF.md's "Real
+  NL-to-SQL against business data" section before touching either
+  WrenAI project or `backend/entrypoint.sh`'s profile registration).
 - **Camunda and DataHub can both be fully self-hosted locally** via
   optional compose overlays (`docker-compose.camunda.yml`,
   `datahub/docker-compose.datahub.yml` - DataHub is 7 containers: GMS,
@@ -62,10 +69,10 @@ things left off.
   on a small local model, see HANDOFF.md's "Greeting detection fix"
   section) in favor of offline, human-reviewed query mining
   (`backend/scripts/review_unmatched_queries.py`).
-- Backend: `ruff` + `mypy` clean, 88 pytest tests (`backend/tests/`) plus
+- Backend: `ruff` + `mypy` clean, 110 pytest tests (`backend/tests/`) plus
   a separate DeepEval-based LLM-judge eval suite (`backend/evals/`, not
   part of a bare `pytest` run - see `backend/README.md`'s "Evals"
-  section). Frontend: `oxlint` clean, 29 vitest tests. All pass.
+  section). Frontend: `oxlint` clean, 43 vitest tests. All pass.
 - LLM integration (OpenAI-compatible assumption) is confirmed working
   against a real local Ollama, but **not yet against the company's
   actual on-prem gateway** - pointing both the app (`backend/.env`) and
