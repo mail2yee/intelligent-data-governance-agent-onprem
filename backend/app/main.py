@@ -84,11 +84,23 @@ async def chat(request: Request):
     user_msg = payload.get("message", "").strip()
     lang = "en" if payload.get("lang") == "en" else "zh"
     mode = "keyword" if payload.get("mode") == "keyword" else "ai"
-    logger.info("Chat request: %r (lang=%s, mode=%s)", user_msg, lang, mode)
+    # Prior turns for this conversation (see chat.py's run_chat) - session-
+    # only on the frontend, never persisted server-side. Capped here since
+    # this is arbitrary client-controlled input reaching an LLM prompt:
+    # last 6 turns (3 exchanges) and 2000 chars each is generous for a
+    # short clarification back-and-forth without letting the prompt grow
+    # unbounded.
+    raw_history = payload.get("history") or []
+    history = [
+        {"role": h.get("role"), "content": str(h.get("content", ""))[:2000]}
+        for h in raw_history[-6:]
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content")
+    ]
+    logger.info("Chat request: %r (lang=%s, mode=%s, history_len=%d)", user_msg, lang, mode, len(history))
     catalog = await datahub_client.get_catalog()
 
     return StreamingResponse(
-        run_chat(user_msg, lang, catalog, mode),
+        run_chat(user_msg, lang, catalog, mode, history),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

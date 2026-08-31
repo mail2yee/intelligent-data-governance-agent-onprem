@@ -1297,6 +1297,91 @@ gotchas above so a future session doesn't have to rediscover them by
 also burning hours of CLI-only debugging against an opaque GKE
 control-plane component.
 
+## Multi-turn clarification for the chat agent (2026-08-31)
+
+User laid out a broader agent-capability wishlist (remembering personal
+chat preferences, real NL-to-SQL against underlying business data,
+KM-grounded answers with follow-up questions, clarifying ambiguous
+questions before answering, and answering from unstructured content
+outside the DB) - a multi-session scope, not a single change. Two
+scope questions got resolved before building anything:
+
+- **"Answer from content not in the structured DB"** - confirmed this
+  means adding a trusted unstructured knowledge base (policy docs,
+  glossaries) as an *additional* grounded source alongside the
+  `data_products` catalog, not letting the LLM answer from its own
+  general knowledge - the latter would directly contradict this app's
+  entire zero-hallucination design (WrenAI's governed engine, the
+  prompt's explicit "never invent a fake data subject" rule). Not built
+  yet - scoped for a later session.
+- **"NL-to-SQL"** - user initially thought WrenAI already covered this
+  fully; clarified it doesn't. WrenAI's MDL model
+  (`wren/project/models/data_products/metadata.yml`) only declares the
+  `data_products` table (the catalog's own metadata) - it has never
+  been pointed at the real business databases each catalog entry
+  describes (e.g. `capacity-postgres.corp.internal`,
+  `sales-oracle-cluster.corp.internal`, per each entry's
+  `db_host`/`db_type`). Today's WrenAI usage answers "which data
+  subject matches this need," not "what's the actual capacity number" -
+  the app hands back connection info for the user's own tools
+  (`ConnectionCodeDialog`) instead of querying real data itself, by
+  design. Expanding this to real governed NL-to-SQL against the
+  underlying business data is a real scope/security-boundary change,
+  not an incremental improvement - deliberately not started without a
+  separate, explicit decision.
+
+**Built this session: item 4, clarifying ambiguous questions before
+answering.** Chose the smallest safe implementation that actually
+solves the problem the user hit
+(`我想要做一個 report 需要哪些 data source?` getting a flat rejection
+even after the earlier `not_found_reply()` improvement) - session-only
+conversation history, carried through the *same* existing prompts and
+the *same* existing verified-match-count decision
+(`resolve_via_semantic_layer()`), not a new "is this vague enough to
+need clarification" classification step. That distinction matters: a
+new classifier would carry the same small-model reliability risk
+already hit and reverted once for greeting detection (see "Greeting
+detection fix" above) - this instead just gives the *same* decision
+more context to work with.
+
+- `chat.py`: `_format_history()` renders prior `{role, content}` turns
+  into a prompt block; `build_prompt()`, `build_sql_prompt()`,
+  `resolve_via_semantic_layer()`, and `run_chat()` all gained an
+  optional `history` parameter. Keyword mode ignores it entirely (no
+  LLM to give context to, deliberately stays stateless per its own
+  design).
+- `main.py`'s `/api/chat` reads `history` from the request body,
+  sanitized (role must be user/assistant, content non-empty) and capped
+  (last 6 turns, 2000 chars each) - arbitrary client-controlled input
+  reaching an LLM prompt, not something to trust as bounded just
+  because it's "only history."
+- Frontend: `api.js`'s `streamChat()` gained a `history` parameter
+  (positional, before the callbacks object - every call site updated).
+  `CopilotDock.jsx` was already a real conversation-thread UI (keeps a
+  `messages` array, renders the whole thread) that simply never sent
+  prior turns back to the backend - now builds `history` from its own
+  `messages` state each `send()`. `DiscoverView.jsx` is a search-box UX
+  by design, not a chat thread - kept that UI as-is, but added
+  functional history tracking: carried forward only while a search
+  stays unresolved (phase `'empty'`), reset once a search resolves to
+  real matches or a chip starts a deliberately fresh example search.
+- 11 new backend tests (`test_chat.py`: `_format_history()`,
+  history-aware `build_prompt()`/`build_sql_prompt()`, a fake-LLM test
+  confirming history reaches *both* LLM calls in a turn, keyword mode
+  ignoring history; `test_tickets.py`: the `/api/chat` route's
+  sanitization/capping/pass-through). 6 new frontend tests
+  (`api.test.js`: history in the request body, default-empty; new
+  `DiscoverView.test.jsx`: the carry-forward/reset state machine, all 4
+  cases). 99 pytest / 35 vitest total, `ruff`/`mypy`/`oxlint` all clean.
+- **Verified live, not just via tests**: rebuilt and ran the actual
+  local stack, drove a real 3-turn exchange through the browser against
+  a real local Ollama. Confirmed via backend logs that `history_len`
+  went `0 → 2 → 0` exactly as designed - a follow-up ("產能面的") too
+  short to match anything on its own resolved to 2 real catalog
+  matches once combined with the prior turn's context, and a
+  completely new, unrelated query afterward correctly started with
+  empty history instead of dragging the resolved exchange along.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

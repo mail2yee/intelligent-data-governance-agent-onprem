@@ -43,7 +43,7 @@ async def test_chat_endpoint_streams_sse(client, monkeypatch):
 
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
         captured["user_msg"] = user_msg
         captured["lang"] = lang
         captured["catalog"] = catalog
@@ -66,7 +66,7 @@ async def test_chat_endpoint_respects_explicit_en_lang(client, monkeypatch):
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
         captured["lang"] = lang
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
@@ -80,7 +80,7 @@ async def test_chat_endpoint_passes_keyword_mode_through(client, monkeypatch):
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
         captured["mode"] = mode
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
@@ -94,7 +94,7 @@ async def test_chat_endpoint_ignores_unknown_mode_value(client, monkeypatch):
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
         captured["mode"] = mode
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
@@ -102,6 +102,93 @@ async def test_chat_endpoint_ignores_unknown_mode_value(client, monkeypatch):
 
     await client.post("/api/chat", json={"message": "hi", "mode": "bogus"})
     assert captured["mode"] == "ai"
+
+
+async def test_chat_endpoint_passes_history_through(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {})
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+        captured["history"] = history
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    await client.post(
+        "/api/chat",
+        json={
+            "message": "產能面的",
+            "history": [
+                {"role": "user", "content": "我想要做一個 report"},
+                {"role": "assistant", "content": "可以說明一下想分析的報表主要跟哪個方向有關嗎？"},
+            ],
+        },
+    )
+    assert captured["history"] == [
+        {"role": "user", "content": "我想要做一個 report"},
+        {"role": "assistant", "content": "可以說明一下想分析的報表主要跟哪個方向有關嗎？"},
+    ]
+
+
+async def test_chat_endpoint_defaults_history_to_empty_list(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {})
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+        captured["history"] = history
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    await client.post("/api/chat", json={"message": "hi"})
+    assert captured["history"] == []
+
+
+async def test_chat_endpoint_drops_malformed_history_entries(client, monkeypatch):
+    # Client-controlled input reaching an LLM prompt - malformed entries
+    # (wrong role, missing content, not even a dict) must be dropped
+    # rather than passed through as-is or crashing the request.
+    await _mock_catalog(monkeypatch, {})
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+        captured["history"] = history
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    await client.post(
+        "/api/chat",
+        json={
+            "message": "hi",
+            "history": [
+                {"role": "user", "content": "kept"},
+                {"role": "system", "content": "dropped - not user/assistant"},
+                {"role": "user", "content": ""},  # dropped - empty content
+                {"role": "assistant"},  # dropped - no content key at all
+                "not even a dict",  # dropped
+            ],
+        },
+    )
+    assert captured["history"] == [{"role": "user", "content": "kept"}]
+
+
+async def test_chat_endpoint_caps_history_length_and_turn_size(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {})
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+        captured["history"] = history
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    long_history = [{"role": "user", "content": f"turn {i}"} for i in range(10)]
+    long_history.append({"role": "user", "content": "x" * 3000})
+
+    await client.post("/api/chat", json={"message": "hi", "history": long_history})
+    assert len(captured["history"]) == 6  # last 6 turns only
+    assert len(captured["history"][-1]["content"]) == 2000  # truncated per-turn
 
 
 async def test_create_and_list_ticket(client, monkeypatch):

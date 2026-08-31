@@ -25,18 +25,28 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
   const [hits, setHits] = useState([])
   const [steps, setSteps] = useState([])
   const [stepsOpen, setStepsOpen] = useState(false)
+  // Conversation context for AI mode's multi-turn clarification loop (see
+  // chat.py's run_chat() docstring) - carried forward only while a search
+  // is still unresolved (phase 'empty'), so the next thing typed into the
+  // same box is interpreted as a follow-up/clarification instead of an
+  // isolated, out-of-context request. Reset once a search actually
+  // resolves to real matches, or a chip starts a deliberately fresh
+  // example search - a later, unrelated query shouldn't drag stale
+  // context along. Session-only, cleared on page reload.
+  const [history, setHistory] = useState([])
 
   function selectMode(next) {
     setMode(next)
     localStorage.setItem(SEARCH_MODE_KEY, next)
   }
 
-  async function runSearch(q) {
+  async function runSearch(q, { resetHistory = false } = {}) {
     if (!q.trim()) {
       setPhase('idle')
       return
     }
-    console.log('[DGO] runSearch:', q, 'mode:', mode)
+    const historyForThisTurn = resetHistory ? [] : history
+    console.log('[DGO] runSearch:', q, 'mode:', mode, 'history turns:', historyForThisTurn.length)
     setPhase('loading')
     setNote('')
     setHits([])
@@ -44,7 +54,7 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
     setStepsOpen(true) // auto-expand live while steps are actually arriving
 
     let accumulated = ''
-    await streamChat(q, lang, mode, {
+    await streamChat(q, lang, mode, historyForThisTurn, {
       onStep: (text) => setSteps((prev) => [...prev, text]),
       onToken: (text) => {
         accumulated += text
@@ -59,7 +69,13 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
         // once the final event decides there's no match.
         setNote(finalReply || t('emptyState')(q))
         setHits(matched)
-        setPhase(matched.length === 0 ? 'empty' : 'done')
+        const resolved = matched.length > 0
+        setPhase(resolved ? 'done' : 'empty')
+        setHistory(
+          resolved
+            ? []
+            : [...historyForThisTurn, { role: 'user', content: q }, { role: 'assistant', content: finalReply }]
+        )
       },
       onError: () => setPhase('error'),
     })
@@ -110,7 +126,7 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
               onClick={() => {
                 const q = lang === 'zh' ? c.qZh : c.qEn
                 setQuery(q)
-                runSearch(q)
+                runSearch(q, { resetHistory: true })
               }}
             >
               {t(c.key)}

@@ -46,7 +46,7 @@ describe('streamChat', () => {
     global.fetch.mockResolvedValue(makeSSEResponse(events))
 
     const seen = []
-    await streamChat('hi', 'en', 'ai', {
+    await streamChat('hi', 'en', 'ai', [], {
       onStep: (t) => seen.push(['step', t]),
       onToken: (t) => seen.push(['token', t]),
       onFinal: (evt) => seen.push(['final', evt]),
@@ -64,24 +64,58 @@ describe('streamChat', () => {
     global.fetch.mockResolvedValue(makeSSEResponse(events, { splitMidFrame: true }))
 
     let final = null
-    await streamChat('hi', 'en', 'ai', { onFinal: (evt) => (final = evt) })
+    await streamChat('hi', 'en', 'ai', [], { onFinal: (evt) => (final = evt) })
 
     expect(final).not.toBeNull()
     expect(final.reply).toBe('ok')
   })
 
-  it('sends the current message and lang in the request body', async () => {
+  it('sends the current message, lang, and an empty history in the request body', async () => {
     global.fetch.mockResolvedValue(
       makeSSEResponse([{ type: 'final', reply: '', matched_products: [], thinking_steps: [] }])
     )
 
-    await streamChat('我想分析產能', 'zh', 'keyword', {})
+    await streamChat('我想分析產能', 'zh', 'keyword', [], {})
 
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/chat',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ message: '我想分析產能', lang: 'zh', mode: 'keyword' }),
+        body: JSON.stringify({ message: '我想分析產能', lang: 'zh', mode: 'keyword', history: [] }),
+      })
+    )
+  })
+
+  it('sends prior turns as history when provided', async () => {
+    global.fetch.mockResolvedValue(
+      makeSSEResponse([{ type: 'final', reply: '', matched_products: [], thinking_steps: [] }])
+    )
+    const history = [
+      { role: 'user', content: '我想要做一個 report' },
+      { role: 'assistant', content: '可以說明一下想分析的報表主要跟哪個方向有關嗎？' },
+    ]
+
+    await streamChat('產能面的', 'zh', 'ai', history, {})
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/chat',
+      expect.objectContaining({
+        body: JSON.stringify({ message: '產能面的', lang: 'zh', mode: 'ai', history }),
+      })
+    )
+  })
+
+  it('defaults history to an empty array when omitted', async () => {
+    global.fetch.mockResolvedValue(
+      makeSSEResponse([{ type: 'final', reply: '', matched_products: [], thinking_steps: [] }])
+    )
+
+    await streamChat('hi', 'en', 'ai', undefined, {})
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/chat',
+      expect.objectContaining({
+        body: JSON.stringify({ message: 'hi', lang: 'en', mode: 'ai', history: [] }),
       })
     )
   })
@@ -90,7 +124,7 @@ describe('streamChat', () => {
     global.fetch.mockRejectedValue(new Error('network down'))
 
     let error = null
-    await streamChat('hi', 'en', 'ai', { onError: (e) => (error = e) })
+    await streamChat('hi', 'en', 'ai', [], { onError: (e) => (error = e) })
 
     expect(error).not.toBeNull()
     expect(error.message).toBe('network down')
@@ -100,7 +134,7 @@ describe('streamChat', () => {
     global.fetch.mockResolvedValue({ ok: false, status: 500, body: null })
 
     let error = null
-    await streamChat('hi', 'en', 'ai', { onError: (e) => (error = e) })
+    await streamChat('hi', 'en', 'ai', [], { onError: (e) => (error = e) })
 
     expect(error).not.toBeNull()
   })

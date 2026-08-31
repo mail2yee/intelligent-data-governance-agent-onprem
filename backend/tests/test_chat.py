@@ -6,6 +6,9 @@ from sqlalchemy import select
 from app.chat import (
     GREETING_REPLY,
     _extract_sql,
+    _format_history,
+    build_prompt,
+    build_sql_prompt,
     is_greeting,
     keyword_search,
     local_rule_match,
@@ -398,3 +401,93 @@ async def test_run_chat_semantic_layer_failure_and_text_says_no_match(monkeypatc
     assert final["matched_products"] == []
     step_texts = [e["text"] for e in events if e["type"] == "step"]
     assert any("Zero Hallucination" in t for t in step_texts)
+
+
+def test_format_history_empty_returns_empty_string():
+    assert _format_history(None) == ""
+    assert _format_history([]) == ""
+
+
+def test_format_history_renders_prior_turns_in_order():
+    history = [
+        {"role": "user", "content": "我想要做一個 report"},
+        {"role": "assistant", "content": "可以說明是哪個方向嗎？"},
+    ]
+    rendered = _format_history(history)
+    assert "[Conversation so far]" in rendered
+    assert "user: 我想要做一個 report" in rendered
+    assert "assistant: 可以說明是哪個方向嗎？" in rendered
+    # order preserved
+    assert rendered.index("user: 我想要做一個 report") < rendered.index("assistant: 可以說明是哪個方向嗎？")
+
+
+def test_build_prompt_omits_conversation_block_with_no_history():
+    prompt = build_prompt("capacity please", "en", CATALOG)
+    assert "[Conversation so far]" not in prompt
+    assert "follow-up" not in prompt.lower()
+
+
+def test_build_prompt_includes_history_and_followup_hint():
+    history = [{"role": "assistant", "content": "Which area is your report about?"}]
+    prompt = build_prompt("capacity", "en", CATALOG, history)
+    assert "[Conversation so far]" in prompt
+    assert "Which area is your report about?" in prompt
+    assert "follow-up" in prompt.lower()
+
+
+def test_build_sql_prompt_includes_history_and_followup_hint():
+    history = [{"role": "user", "content": "我想要做一個 report"}]
+    prompt = build_sql_prompt("產能面的", KEYWORD_CATALOG, history)
+    assert "[Conversation so far]" in prompt
+    assert "我想要做一個 report" in prompt
+    assert "follow-up" in prompt.lower()
+
+
+async def test_run_chat_passes_history_to_both_llm_calls(monkeypatch):
+    # A short follow-up ("產能面的") on its own wouldn't extract a useful
+    # keyword without knowing what was already asked - confirms history
+    # actually reaches both the prose-reply prompt and the SQL-generation
+    # prompt, not just one of them.
+    seen_prompts = []
+
+    async def _fake(messages, model=None):
+        prompt = messages[0]["content"]
+        seen_prompts.append(prompt)
+        if "Write ONE SQL" in prompt:
+            yield "SELECT id, name FROM data_products WHERE id = 'customer-capacity-allocation'"
+        else:
+            yield "Specific Customer Capacity Allocation looks relevant."
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _fake)
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    async def _fake_resolve(sql):
+        return [{"id": "customer-capacity-allocation", "name": "Specific Customer Capacity Allocation"}]
+
+    monkeypatch.setattr("app.chat.wrenai_client.resolve_matches", _fake_resolve)
+
+    history = [
+        {"role": "user", "content": "我想要做一個 report 需要哪些 data source?"},
+        {"role": "assistant", "content": "可以說明一下想分析的報表主要跟哪個方向有關嗎？"},
+    ]
+    events = await _collect_events(run_chat("產能面的", "zh", CATALOG, history=history))
+    assert events[-1]["matched_products"] == ["customer-capacity-allocation"]
+    assert len(seen_prompts) == 2
+    assert all("[Conversation so far]" in p for p in seen_prompts)
+    assert all("我想要做一個 report" in p for p in seen_prompts)
+
+
+async def test_run_chat_keyword_mode_ignores_history(monkeypatch):
+    # Keyword mode has no LLM to give context to - history must be
+    # accepted without error but have zero effect on the deterministic
+    # ILIKE match.
+    events = await _collect_events(
+        run_chat(
+            "capacity 客戶",
+            "zh",
+            KEYWORD_CATALOG,
+            mode="keyword",
+            history=[{"role": "user", "content": "irrelevant prior turn"}],
+        )
+    )
+    assert events[-1]["matched_products"] == ["customer-capacity-allocation"]

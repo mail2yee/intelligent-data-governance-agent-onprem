@@ -61,12 +61,20 @@ export async function submitApproval(ticketId, { owner_email, decision, reason }
 // instead of waiting for one big JSON blob. Ported from the PoC's
 // streamChat() - see HANDOFF.md "Chat / search assistant" for why this
 // has to be a real stream, not a fake staggered reveal.
-export async function streamChat(message, lang, mode, { onStep, onToken, onFinal, onError } = {}) {
+//
+// `history` (2026-08-31, prior {role, content} turns, oldest first) lets
+// a follow-up message be interpreted together with what was already
+// asked in this conversation instead of in isolation - see chat.py's
+// run_chat() docstring for why this is a structural change (more
+// context, same existing match/no-match decision), not a new LLM
+// judgment call. Session-only on the caller's side - nothing here
+// persists it, callers own deciding when a conversation resets.
+export async function streamChat(message, lang, mode, history, { onStep, onToken, onFinal, onError } = {}) {
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ message, lang, mode }),
+      body: JSON.stringify({ message, lang, mode, history: history || [] }),
     })
     if (!res.ok || !res.body) throw new Error('HTTP ' + res.status)
     const reader = res.body.getReader()

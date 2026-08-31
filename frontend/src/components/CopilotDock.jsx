@@ -29,6 +29,23 @@ export default function CopilotDock({ t, lang }) {
   async function send() {
     const text = input.trim()
     if (!text) return
+    // Built from `messages` BEFORE this turn's own updates below, so it's
+    // exactly what the conversation looked like up to (not including)
+    // the message being sent now - see chat.py's run_chat() docstring
+    // for what the backend does with this. Deliberately excludes the
+    // canned greeting (kind: 'text' from the bot, not a real reply) and
+    // any errored turn (kind: 'error', no real answer to hand back) -
+    // only genuine user/assistant exchanges belong in the LLM's context.
+    const history = messages
+      .filter(
+        (m) =>
+          (m.sender === 'user' && m.kind === 'text') || (m.sender === 'bot' && m.kind === 'streaming' && m.answer)
+      )
+      .map((m) => ({
+        role: m.sender === 'user' ? 'user' : 'assistant',
+        content: m.sender === 'user' ? m.text : m.answer,
+      }))
+
     setInput('')
     setMessages((prev) => [...prev, { id: ++msgSeq, sender: 'user', kind: 'text', text }])
 
@@ -40,7 +57,7 @@ export default function CopilotDock({ t, lang }) {
     // Always AI mode here - the assistant dock is inherently conversational
     // (see DiscoverView.jsx for the general/AI search toggle, which only
     // applies to the Discover search box, not this chat panel).
-    await streamChat(text, lang, 'ai', {
+    await streamChat(text, lang, 'ai', history, {
       onStep: (stepText) => {
         setMessages((prev) =>
           prev.map((m) => (m.id === botId ? { ...m, kind: 'streaming', steps: [...m.steps, stepText] } : m))

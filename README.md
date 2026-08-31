@@ -160,6 +160,15 @@ pytest backend/evals/ -v -s
   it unreliable on a small local model; unmatched queries are logged
   instead for offline, human-reviewed triage
   (`backend/scripts/review_unmatched_queries.py`) — see HANDOFF.md.
+- **AI-mode chat supports multi-turn clarification** (2026-08-31) — a
+  vague request ("what data sources are available for a report?") gets
+  a clarifying question listing the catalog's real topics, and a short
+  follow-up ("the capacity one") gets interpreted together with that
+  earlier context instead of as an isolated, unmatchable query. Session-
+  only conversation history, not a new LLM classification step — reuses
+  the same existing verified-match-count decision, just with more
+  context. Verified live end-to-end (backend logs, real 3-turn exchange
+  through the browser), not just via tests — see HANDOFF.md.
 - **All 9 images mirror from GHCR** (`backend`, `frontend`, `camunda`,
   `mariadb`, and DataHub's 7) — confirmed the office network can reach
   `ghcr.io` even though it can't reach Docker Hub or the company's own

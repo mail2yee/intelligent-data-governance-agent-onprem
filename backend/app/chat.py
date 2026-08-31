@@ -191,7 +191,23 @@ async def record_unmatched_query(message: str, lang: str) -> None:
         logger.warning("Failed to record unmatched query: %s", e)
 
 
-def build_prompt(user_msg: str, lang: str, catalog: dict) -> str:
+def _format_history(history: list[dict] | None) -> str:
+    """Renders prior turns (if any) as a block to splice into a prompt, so
+    a short follow-up message (e.g. answering a clarifying question with
+    just "產能面的") gets interpreted together with what was already
+    asked, instead of as an isolated, out-of-context request. Empty
+    string when there's no history, so a first-turn prompt reads
+    identically to before this parameter existed - deliberately not a
+    new LLM-based decision of any kind, just more context handed to the
+    same prompts that already existed (see run_chat()'s docstring for
+    why this stays a structural, not a judgment-call, addition)."""
+    if not history:
+        return ""
+    lines = "\n".join(f"{turn['role']}: {turn['content']}" for turn in history)
+    return f"\n[Conversation so far]\n{lines}\n"
+
+
+def build_prompt(user_msg: str, lang: str, catalog: dict, history: list[dict] | None = None) -> str:
     """Deliberately a plain 2-way match/no-match decision, not a 3-way
     classification that also tries to detect greetings - that was tried
     and reverted 2026-07-31: a small local model kept misclassifying
@@ -205,6 +221,14 @@ def build_prompt(user_msg: str, lang: str, catalog: dict) -> str:
     knowledge_base = json.dumps(catalog, ensure_ascii=False)
     lang_name = "English" if lang == "en" else "Traditional Chinese (繁體中文)"
     not_found_sentence = not_found_reply(catalog, lang)
+    history_block = _format_history(history)
+    followup_hint = (
+        "\nThe latest message may be a follow-up or clarification to the conversation "
+        "above (e.g. narrowing down after being asked which area a report is about) - "
+        "interpret it together with that context, not in isolation."
+        if history
+        else ""
+    )
     return f"""
     [Role]
     You are a rigorous data governance expert. Every user of this tool is
@@ -214,8 +238,8 @@ def build_prompt(user_msg: str, lang: str, catalog: dict) -> str:
     data subject(s) below would help the user build their report.
     The catalog currently contains these data subjects:
     {knowledge_base}
-
-    The user's reporting need is: "{user_msg}"
+    {history_block}
+    The user's latest message is: "{user_msg}"{followup_hint}
 
     [Reply rules - zero hallucination]
     1. Only recommend data subjects that literally exist in the catalog above.
@@ -228,7 +252,7 @@ def build_prompt(user_msg: str, lang: str, catalog: dict) -> str:
     """
 
 
-def build_sql_prompt(user_msg: str, catalog: dict) -> str:
+def build_sql_prompt(user_msg: str, catalog: dict, history: list[dict] | None = None) -> str:
     """Prompt asking the LLM to write SQL against the data_products
     semantic model instead of recommending a subject in free text - the
     resulting SQL gets executed through WrenAI's governed engine
@@ -237,6 +261,14 @@ def build_sql_prompt(user_msg: str, catalog: dict) -> str:
     here; build_prompt()'s reply is still generated for the user-facing
     text, but no longer trusted for deciding matched_products."""
     ids = json.dumps(list(catalog.keys()), ensure_ascii=False)
+    history_block = _format_history(history)
+    followup_hint = (
+        "\nThe latest message may be a short follow-up to the conversation above (e.g. "
+        "answering a clarifying question with just a keyword or two) - extract keywords "
+        "using the full context above, not just this message in isolation."
+        if history
+        else ""
+    )
     return f"""
     You have a Postgres table `data_products` with columns (all text):
     id, name, description, owner, maturity_level, data_quality_score,
@@ -246,8 +278,8 @@ def build_sql_prompt(user_msg: str, catalog: dict) -> str:
     column, never against name/description/tables_joined directly, and
     never convert your own keywords between scripts yourself).
     It currently has rows for exactly these ids: {ids}
-
-    The user's request is: "{user_msg}"
+    {history_block}
+    The user's latest message is: "{user_msg}"{followup_hint}
 
     First, extract 2-4 short keywords or synonyms from the request,
     written in whichever script the request itself uses - never use the
@@ -281,7 +313,9 @@ def _extract_sql(text: str) -> str:
     return cleaned.strip().rstrip(";").strip()
 
 
-async def resolve_via_semantic_layer(user_msg: str, catalog: dict) -> list[str]:
+async def resolve_via_semantic_layer(
+    user_msg: str, catalog: dict, history: list[dict] | None = None
+) -> list[str]:
     """Ask the LLM to write SQL against the data_products semantic model
     and execute it through WrenAI's governed engine - matched ids come
     from real query rows, not from scanning free-form LLM prose.
@@ -296,7 +330,7 @@ async def resolve_via_semantic_layer(user_msg: str, catalog: dict) -> list[str]:
     """
     sql_reply = ""
     async for piece in stream_chat_completion(
-        [{"role": "user", "content": build_sql_prompt(user_msg, catalog)}],
+        [{"role": "user", "content": build_sql_prompt(user_msg, catalog, history)}],
         model=settings.llm_sql_model or None,
     ):
         sql_reply += piece
@@ -384,14 +418,33 @@ async def keyword_search(user_msg: str, lang: str, catalog: dict) -> tuple[list[
     return matched, reply
 
 
-async def run_chat(user_msg: str, lang: str, catalog: dict, mode: str = "ai") -> AsyncIterator[str]:
+async def run_chat(
+    user_msg: str, lang: str, catalog: dict, mode: str = "ai", history: list[dict] | None = None
+) -> AsyncIterator[str]:
     """Async generator of SSE event strings - step / token / final.
 
     `mode="keyword"` is the default "general search" path (see
     keyword_search() above) - no LLM/WrenAI call, no step/token events,
     just an immediate final event. `mode="ai"` (default, for backward
     compatibility) is everything below: greeting fast-path, then the
-    LLM + semantic-layer verification chain."""
+    LLM + semantic-layer verification chain.
+
+    `history` (AI mode only - keyword mode has no LLM to give it context
+    to, and stays deliberately stateless per its own design) is prior
+    turns for this conversation, oldest first - lets a short follow-up
+    message (e.g. answering "which area is your report about?" with just
+    "產能面的") get interpreted together with what was already asked,
+    instead of as an isolated, out-of-context request that would likely
+    fail to match anything on its own. Deliberately NOT a new "is this
+    vague enough to need clarification" classification step - that would
+    carry the same small-model reliability risk already hit and reverted
+    once for greeting detection (see is_greeting()'s docstring history).
+    The existing verified-match-count signal from
+    resolve_via_semantic_layer() below still alone decides whether a
+    turn resolves to real matches or falls through to
+    not_found_reply()'s clarifying question - history only gives that
+    same decision more context to work with, it doesn't change how the
+    decision itself is made."""
     thinking_steps: list[str] = []
 
     def step(text: str) -> str:
@@ -413,7 +466,7 @@ async def run_chat(user_msg: str, lang: str, catalog: dict, mode: str = "ai") ->
     yield step("🧠 收到需求，開始進行 Reasoning 與任務拆解...")
     yield step("🔍 正在檢索資料目錄...")
 
-    prompt = build_prompt(user_msg, lang, catalog)
+    prompt = build_prompt(user_msg, lang, catalog, history)
     matched_products: list[str] = []
     reply = ""
 
@@ -440,7 +493,7 @@ async def run_chat(user_msg: str, lang: str, catalog: dict, mode: str = "ai") ->
         verified: list[str] | None = None
         try:
             yield step("🧬 透過語意層 (WrenAI) 驗證比對結果...")
-            verified = await resolve_via_semantic_layer(user_msg, catalog)
+            verified = await resolve_via_semantic_layer(user_msg, catalog, history)
         except Exception as e:
             yield step(
                 f"⚠️ 語意層驗證失敗（{e}），改用文字比對結果。"
