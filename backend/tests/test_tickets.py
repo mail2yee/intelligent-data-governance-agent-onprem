@@ -43,7 +43,7 @@ async def test_chat_endpoint_streams_sse(client, monkeypatch):
 
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
         captured["user_msg"] = user_msg
         captured["lang"] = lang
         captured["catalog"] = catalog
@@ -66,7 +66,7 @@ async def test_chat_endpoint_respects_explicit_en_lang(client, monkeypatch):
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
         captured["lang"] = lang
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
@@ -80,7 +80,7 @@ async def test_chat_endpoint_passes_keyword_mode_through(client, monkeypatch):
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
         captured["mode"] = mode
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
@@ -94,7 +94,7 @@ async def test_chat_endpoint_ignores_unknown_mode_value(client, monkeypatch):
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
         captured["mode"] = mode
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
@@ -108,7 +108,7 @@ async def test_chat_endpoint_passes_history_through(client, monkeypatch):
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
         captured["history"] = history
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
@@ -130,11 +130,91 @@ async def test_chat_endpoint_passes_history_through(client, monkeypatch):
     ]
 
 
+async def test_chat_endpoint_passes_user_key_and_fetched_preferences_to_run_chat(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {})
+    from app import preferences as preferences_mod
+
+    await preferences_mod._save_preferences("tim@example.com", ["usually asks about capacity data"])
+
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
+        captured["user_key"] = user_key
+        captured["preferences"] = preferences
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    await client.post("/api/chat", json={"message": "hi", "user_key": "tim@example.com"})
+    assert captured["user_key"] == "tim@example.com"
+    assert captured["preferences"] == ["usually asks about capacity data"]
+
+
+async def test_chat_endpoint_without_user_key_passes_none_preferences(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {})
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
+        captured["user_key"] = user_key
+        captured["preferences"] = preferences
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    await client.post("/api/chat", json={"message": "hi"})
+    assert captured["user_key"] is None
+    assert captured["preferences"] is None
+
+
+async def test_chat_endpoint_strips_and_caps_user_key(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {})
+    captured = {}
+
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
+        captured["user_key"] = user_key
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    await client.post("/api/chat", json={"message": "hi", "user_key": "  padded@example.com  "})
+    assert captured["user_key"] == "padded@example.com"
+
+    await client.post("/api/chat", json={"message": "hi", "user_key": "   "})
+    assert captured["user_key"] is None
+
+
+async def test_get_preferences_returns_saved_list(client, monkeypatch):
+    from app import preferences as preferences_mod
+
+    await preferences_mod._save_preferences("tim@example.com", ["usually asks about capacity data"])
+    res = await client.get("/api/preferences/tim@example.com")
+    assert res.status_code == 200
+    assert res.json() == {"preferences": ["usually asks about capacity data"]}
+
+
+async def test_get_preferences_empty_for_unknown_user(client):
+    res = await client.get("/api/preferences/nobody@example.com")
+    assert res.status_code == 200
+    assert res.json() == {"preferences": []}
+
+
+async def test_delete_preferences_clears_list(client, monkeypatch):
+    from app import preferences as preferences_mod
+
+    await preferences_mod._save_preferences("tim@example.com", ["usually asks about capacity data"])
+    res = await client.delete("/api/preferences/tim@example.com")
+    assert res.status_code == 200
+    assert res.json() == {"status": "success"}
+
+    res = await client.get("/api/preferences/tim@example.com")
+    assert res.json() == {"preferences": []}
+
+
 async def test_chat_endpoint_defaults_history_to_empty_list(client, monkeypatch):
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
         captured["history"] = history
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
@@ -151,7 +231,7 @@ async def test_chat_endpoint_drops_malformed_history_entries(client, monkeypatch
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
         captured["history"] = history
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 
@@ -177,7 +257,7 @@ async def test_chat_endpoint_caps_history_length_and_turn_size(client, monkeypat
     await _mock_catalog(monkeypatch, {})
     captured = {}
 
-    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None):
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
         captured["history"] = history
         yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
 

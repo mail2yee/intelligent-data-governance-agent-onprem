@@ -16,7 +16,7 @@ Camunda), and what business logic / UI direction to carry over.
 
 **重要修正（2026-07-29）：Camunda 公司實際用的是 7.22 版**，不是原本以為的 Camunda 8（Zeebe/gRPC）——是完全不同的產品（REST API，沒有 gRPC/job worker 模型）。`camunda_client.py` 已經整個重寫並拿真實的本機 `camunda/camunda-bpm-platform:7.22.0` container 實測驗證過。
 
-**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **110** 個 pytest、前端 43 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
+**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **143** 個 pytest、前端 58 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
 
 **2026-08-05 架構調整：Camunda、DataHub、Postgres 現在都是「預設自架 image，image 抓不到就退回 config 裡設定的公司真實服務」**（Postgres 除外，一律自架，沒有退回機制）。DataHub 從原本跟 sibling repo 共用的獨立 `datahub docker quickstart` stack，改成直接併進這個 repo 自己的 `docker-compose.yml`（`datahub/docker-compose.datahub.yml`，7 個 container：GMS、前端、MySQL、Kafka、OpenSearch、Actions、一次性 init job）。新增 **`./deploy.sh`** 作為一鍵部署入口——會依序嘗試 pull 每個 image，抓得到就自架、抓不到就跳過並讓 app 退回用 `backend/.env` 裡已經設定的公司端點。全部 9 個 image（backend、frontend、camunda、mariadb、加上 DataHub 的 7 個）都走 `ghcr.io/mail2yee/...`，公司防火牆已確認連得到。細節見 `HANDOFF.md`「Self-hosted images with a config fallback」。
 
@@ -27,6 +27,8 @@ Camunda), and what business logic / UI direction to carry over.
 **2026-08-30：新增 GKE demo 部署，跟公司內網無關，純粹是「給特定人看」用途。** 完整架構搬到 `k8s/` 目錄（`docker-compose.yml`/overlay 的手寫 K8s 版本，StatefulSet+PVC 處理所有有狀態服務），真的部署上一個 GKE cluster，用 Google Identity-Aware Proxy（IAP）限制只有指定的 Google 帳號能連得進去，HTTPS 走 Google-managed 憑證。過程中發現 GKE 舊版 Ingress 控制器整個罷工（連一次同步都沒有，兩個不同 cluster 都一樣，Google 管控平面內部元件、指令行完全查不到原因），改用 Gateway API（Google 現在主推的新架構）才真正跑起來。細節、實際部署步驟、踩過的坑全部寫在 `k8s/README.md`。
 
 **2026-08-31：新增「真的查詢實際業務資料」的 NL-to-SQL 功能。** 之前 WrenAI 只用來比對目錄 metadata（哪個資料主體符合需求），從沒真的接過底層業務資料庫。這次另外建了一個獨立的假業務資料庫（`fab-business-db`，Postgres，自己的 WrenAI project——WrenAI 一個 project 只能接一個實體連線，不能沿用目錄那個），並且用兩層 gate 保護：一是 registry（`business_data.py` 的 `PRODUCT_DATA_SOURCES`，目前只接了 `customer-capacity-allocation` 一個），二是要有一張真的 APPROVED 票單涵蓋這個 product——兩個都在後端強制檢查，不是只靠前端藏按鈕。連線程式碼對話框裡新增「直接查詢這份資料」欄位。整個流程（種子資料、兩個 WrenAI project 建置、核准前擋下來、核准後真的查到資料、瀏覽器實測）都跑過真實環境驗證，細節見 `HANDOFF.md`「Real NL-to-SQL against business data」。
+
+**2026-09-01：新增「記住個人對話偏好」功能。** 這是使用者原本 5 項 agent 願望清單的第 1 項。因為系統目前沒有真的登入機制，先跟使用者確認過兩個範圍決策：身分用輕量、非驗證的 `user_key`（在右上角新的「你的稱呼」對話框裡設定，只存在瀏覽器 localStorage）；「記住偏好」指的是萃取成具體的偏好描述（例如「常問產能相關資料」），不是存整段逐字對話紀錄。這份偏好清單會被塞進之後的 prompt 當背景資訊，明確規定只能用來輔助解讀模糊問題，不能當作推薦目錄以外資料的理由。實測時抓到一個真的 bug：偏好萃取一開始沿用了 SQL 專用模型（`llama3-groq-tool-use:8b`），結果那個模型在這個任務上穩定回傳格式錯誤的 JSON，改用預設的對話模型後才正常——這個問題是靠真的跑過本機 Ollama 才發現的，不是看程式碼看出來的。整個流程（真的讓 LLM 從對話中萃取偏好、存起來、下次模糊提問時真的影響回覆內容、瀏覽器上設定/清除偏好）都跑過真實環境驗證，細節見 `HANDOFF.md`「Personal chat preference memory」。
 
 **架構：** `docker-compose.yml` + 兩個可選的 overlay 檔案（`docker-compose.camunda.yml`、`datahub/docker-compose.datahub.yml`）——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 讀寫 `mariadb`（:3307，本機自架，無退回機制），也打 `camunda`（本機自架 REST API，:8082，抓不到 image 就退回 config）、DataHub（本機自架 GMS，:18080，同樣抓不到就退回 config），對外打一個內網服務：LLM gateway。完整圖見下面「Architecture」章節。
 
@@ -184,6 +186,21 @@ pytest backend/evals/ -v -s
   correctly blocked, a real approved ticket's query returning real
   LLM-aggregated rows through both `curl` and the actual browser UI —
   see HANDOFF.md "Real NL-to-SQL against business data".
+- **Personal chat preference memory** (2026-09-01) — the top-bar avatar
+  (previously a hardcoded placeholder) is now a real profile control: set
+  a name/email (stored only in the browser's `localStorage`, no real
+  login exists yet) and the assistant extracts and remembers short,
+  concrete preferences from your own chat history (e.g. "usually asks
+  about capacity data"), spliced into future prompts as background
+  context — explicitly never a reason to recommend something the catalog
+  doesn't support. View or clear what's remembered any time from the
+  same dialog. A real bug was caught via live testing: the extraction
+  call initially reused the SQL-tuned model, which reliably produced
+  malformed output for this task; fixed by using the default
+  conversational model instead. Verified live end-to-end — a real
+  preference-revealing message got extracted and persisted, and a later,
+  genuinely ambiguous follow-up's reply explicitly reasoned from it —
+  see HANDOFF.md "Personal chat preference memory".
 - **All 9 images mirror from GHCR** (`backend`, `frontend`, `camunda`,
   `mariadb`, and DataHub's 7) — confirmed the office network can reach
   `ghcr.io` even though it can't reach Docker Hub or the company's own

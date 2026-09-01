@@ -57,6 +57,24 @@ export async function createTicket({ products, objective, purpose }) {
   return res.json()
 }
 
+// See ProfileDialog.jsx - lets a user see and clear exactly what's been
+// remembered about them (backend/app/preferences.py), keyed by the same
+// self-declared, non-authenticated userKey streamChat() sends.
+export async function getPreferences(userKey) {
+  const res = await fetch(`/api/preferences/${encodeURIComponent(userKey)}`, { headers: authHeaders() })
+  if (!res.ok) throw new Error('HTTP ' + res.status)
+  return res.json()
+}
+
+export async function clearPreferences(userKey) {
+  const res = await fetch(`/api/preferences/${encodeURIComponent(userKey)}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!res.ok) throw new Error('HTTP ' + res.status)
+  return res.json()
+}
+
 export async function getTickets() {
   const res = await fetch('/api/tickets', { headers: authHeaders() })
   if (!res.ok) throw new Error('HTTP ' + res.status)
@@ -86,12 +104,32 @@ export async function submitApproval(ticketId, { owner_email, decision, reason }
 // context, same existing match/no-match decision), not a new LLM
 // judgment call. Session-only on the caller's side - nothing here
 // persists it, callers own deciding when a conversation resets.
-export async function streamChat(message, lang, mode, history, { onStep, onToken, onFinal, onError } = {}) {
+//
+// `userKey` (2026-09-01, optional, inside the callbacks object so
+// existing positional call sites don't need to change) is a lightweight,
+// self-declared identity (see ProfileDialog.jsx) - when set, the backend
+// remembers/recalls preferences extracted from this user's own past
+// turns (see backend/app/preferences.py). Omitted from the request body
+// entirely when not set, so the body shape is unchanged for callers that
+// never pass it.
+export async function streamChat(
+  message,
+  lang,
+  mode,
+  history,
+  { userKey, onStep, onToken, onFinal, onError } = {}
+) {
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ message, lang, mode, history: history || [] }),
+      body: JSON.stringify({
+        message,
+        lang,
+        mode,
+        history: history || [],
+        ...(userKey ? { user_key: userKey } : {}),
+      }),
     })
     if (!res.ok || !res.body) throw new Error('HTTP ' + res.status)
     const reader = res.body.getReader()

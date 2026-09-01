@@ -1511,6 +1511,134 @@ and handed back connection info for the user's own tools):
   是多少？") into the new panel, and got back a real result table
   rendered from live rows.
 
+## Personal chat preference memory (2026-09-01)
+
+Item 1 of the agent wishlist from the "Multi-turn clarification" section
+above - the user asked for this next ("1"). Two scope decisions were
+confirmed via AskUserQuestion before writing any code, since this needed
+some notion of "the same user across sessions" and this app has no real
+identity system:
+
+- **Identity: a lightweight, self-declared `user_key`** (the recommended
+  option, and the one chosen) - a name/email typed into a new profile
+  dialog and stored in the browser's `localStorage`, not a real
+  authenticated login. This app has no SSO/OIDC yet (the same gap
+  `submit_approval()` already has, per the Security review section
+  above) - building real per-user auth first was explicitly *not*
+  chosen; this is a personalization nicety, not a security boundary,
+  and the user can view/clear their own remembered list at any time
+  (transparency is the actual safeguard here).
+- **What "preference" means: extracted, concrete preference statements**
+  (the recommended option) - e.g. "usually asks about capacity data",
+  "works on sales planning reports" - not raw stored transcripts. A
+  short, LLM-maintained list (capped at `MAX_PREFERENCES = 8`) gets
+  spliced into future prompts as background context, the same
+  "structural context, not a new judgment call" pattern already used
+  for `history` (see the Multi-turn clarification section).
+
+**What was built:**
+
+- `db.py`'s new `UserPreference` model (`user_key` primary key, a JSON
+  list column) and **new module `backend/app/preferences.py`** - the
+  design center: `get_preferences()`/`_save_preferences()`/
+  `clear_preferences()`, an extraction prompt asking the LLM whether the
+  latest exchange reveals a new/updated preference (reply with the full
+  updated JSON array, or `NO_CHANGE`), and `observe_and_update()` tying
+  it together - best-effort and non-blocking, same fallback philosophy
+  as `chat.py`'s `record_unmatched_query()`: a failure here (LLM
+  unreachable, malformed reply, DB error) is logged and swallowed, never
+  breaks the actual chat reply the user is waiting on.
+- `chat.py`: new `_format_preferences()` helper (mirrors
+  `_format_history()`'s shape exactly), spliced into both
+  `build_prompt()` and `build_sql_prompt()` - explicitly instructed to
+  use preferences "only to help interpret ambiguous wording, never as a
+  reason to recommend something not evidenced by the catalog", so this
+  can't become a second, softer path around the zero-hallucination
+  guarantee. `run_chat()` gained `user_key`/`preferences` params and
+  calls `observe_and_update()` once, right before the final SSE event
+  (after the reply is already fully decided, so it never delays what the
+  user sees) - skipped entirely for keyword mode (no LLM), greeting
+  fast-path (nothing to learn from small talk), and whenever the LLM was
+  unreachable this turn (the extraction call would just fail too).
+- `main.py`: `/api/chat` reads an optional `user_key` from the request
+  body (stripped, capped at 128 chars, same client-controlled-input
+  caveat as `history`), fetches existing preferences before calling
+  `run_chat()`. New `GET`/`DELETE /api/preferences/{user_key}` endpoints
+  - deliberately no access control beyond the user_key itself (see the
+  identity decision above); transparency (the user can see and clear
+  exactly what's remembered) is the actual safeguard.
+- **Frontend**: the top-bar avatar (previously a hardcoded "TS"
+  placeholder) is now a real, clickable control showing initials derived
+  from the user's own `user_key`, opening a new `ProfileDialog.jsx` -
+  set/change the name, see the remembered preference list, clear it.
+  `App.jsx` owns `userKey` state (persisted to `localStorage`, same
+  pattern as `DiscoverView.jsx`'s search-mode toggle), passed down to
+  `CopilotDock.jsx` and `DiscoverView.jsx`, both of which now pass it to
+  `streamChat()`. `api.js`'s `streamChat()` gained `userKey` as an
+  optional field *inside* its existing callbacks object (not a new
+  positional parameter) specifically so the request body omits
+  `user_key` entirely when unset - existing call sites and their tests
+  needed zero changes.
+- **A real bug caught via live testing, not by reading code**: the
+  extraction call initially reused `settings.llm_sql_model`
+  (`llama3-groq-tool-use:8b`), following `build_sql_prompt()`'s pattern
+  on the assumption that "a stricter-output-tuned model" would help here
+  too. Live-tested against the real local Ollama stack: that model
+  reliably produced malformed output for this task specifically - a
+  nested `[{"preferance": "..."}]` object (even misspelled) instead of
+  the requested flat `["..."]` array - while the default conversational
+  model (`qwen3:14b`) got it right every time tested. In hindsight this
+  makes sense: `llm_sql_model` was chosen for strict SQL syntax
+  reliability, not general JSON-array extraction/summarization, which is
+  a different kind of task. `_parse_extraction_reply()`'s validation
+  correctly rejected the malformed replies (best-effort → silently no
+  update, never a crash), so this never broke anything user-visible -
+  just meant the feature quietly never actually learned anything until
+  fixed. Fixed by dropping the `model=` override entirely (falls back to
+  `settings.llm_model`).
+- Tests: `backend/tests/test_preferences.py` (get/save/clear,
+  `_parse_extraction_reply()`'s NO_CHANGE/malformed-JSON/non-list/
+  non-string/cap-at-8 cases, `observe_and_update()` against a mocked LLM
+  - saves on a real update, no-ops on NO_CHANGE, swallows both LLM
+  failures and malformed replies). New cases in `test_chat.py`
+  (`_format_preferences()`, both prompts include the block, `run_chat()`
+  passes preferences to both LLM calls, calls `observe_and_update()`
+  only when `user_key` is given AND the LLM was reachable AND not
+  keyword mode) and `test_tickets.py` (`/api/chat` reads/strips/caps
+  `user_key` and fetches existing preferences before calling
+  `run_chat()`; the two new `/api/preferences` endpoints). Frontend:
+  `api.test.js` (`userKey` omitted vs included in the request body,
+  `getPreferences()`/`clearPreferences()`), new `ProfileDialog.test.jsx`
+  and `TopBar.test.jsx` (initials derivation, empty state, fetch/clear
+  flow). 143 pytest / 58 vitest total, `ruff`/`mypy`/`oxlint` all clean.
+- **Verified live, not just via tests**: rebuilt and ran the actual
+  local stack against a real local Ollama. Confirmed via direct
+  `/api/chat` calls that a genuine preference-revealing message ("I'm on
+  the capacity planning team, prioritize capacity-related reports for
+  me") gets correctly extracted and persisted - and, going the other
+  way, that a single specific one-off question does *not* get treated as
+  a standing preference (the LLM correctly replied `NO_CHANGE`,
+  confirming the prompt's "never invent a preference the conversation
+  doesn't actually evidence" instruction is actually being followed, not
+  just written). Confirmed the remembered preference actually reaches
+  and influences a later, genuinely ambiguous follow-up: asked "help me
+  find related data subjects" (no capacity keyword at all) from a user
+  with "works on capacity planning reports" remembered - the reply
+  explicitly reasoned from it ("Based on your past work on capacity
+  planning reports, the most relevant is..."). Whether that reasoning
+  also survives WrenAI's separate structural SQL-verification step
+  (`resolve_via_semantic_layer()`) is subject to the same small local
+  SQL-model reliability limitation already documented throughout this
+  file (e.g. the DeepEval 0.50-1.00 pass-rate note) - not a new
+  limitation this feature introduces. Then drove the same flow through
+  the actual browser UI end-to-end: opened the profile dialog, set a
+  name, confirmed the avatar updated from "?" to real initials, sent a
+  preference-revealing message through the CopilotDock chat panel,
+  confirmed via backend logs the preference was extracted and saved,
+  reopened the dialog and saw it listed, and confirmed the "clear" button
+  actually deletes it server-side (checked via a direct API call, not
+  just the UI updating).
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

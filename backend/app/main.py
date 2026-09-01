@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from . import preferences
 from .chat import run_chat
 from .config import settings
 from .db import Approval, Ticket, async_session, init_db
@@ -143,14 +144,34 @@ async def chat(request: Request):
         for h in raw_history[-6:]
         if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content")
     ]
+    # Self-declared, not authenticated (see preferences.py's UserPreference
+    # docstring) - capped since this is client-controlled input, same
+    # caveat as `history` above.
+    user_key = str(payload.get("user_key") or "").strip()[:128] or None
+    user_preferences = await preferences.get_preferences(user_key) if user_key else None
     logger.info("Chat request: %r (lang=%s, mode=%s, history_len=%d)", user_msg, lang, mode, len(history))
     catalog = await datahub_client.get_catalog()
 
     return StreamingResponse(
-        run_chat(user_msg, lang, catalog, mode, history),
+        run_chat(user_msg, lang, catalog, mode, history, user_key, user_preferences),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@api_router.get("/api/preferences/{user_key}")
+async def get_preferences(user_key: str):
+    """Lets a user see exactly what's been remembered about them (see
+    preferences.py's module docstring on why this is a lightweight,
+    self-declared user_key rather than a real authenticated identity) -
+    transparency is the actual safeguard here, not access control."""
+    return {"preferences": await preferences.get_preferences(user_key)}
+
+
+@api_router.delete("/api/preferences/{user_key}")
+async def delete_preferences(user_key: str):
+    await preferences.clear_preferences(user_key)
+    return {"status": "success"}
 
 
 def _ticket_to_dict(ticket: Ticket) -> dict:

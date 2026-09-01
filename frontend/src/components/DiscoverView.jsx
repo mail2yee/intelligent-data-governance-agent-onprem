@@ -14,7 +14,7 @@ const CHIPS = [
 // keyword search, same as Google's "AI Mode" toggle pattern).
 const SEARCH_MODE_KEY = 'dgo_search_mode'
 
-export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
+export default function DiscoverView({ t, lang, catalog, cart, onToggleCart, userKey }) {
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState(() => {
     const saved = localStorage.getItem(SEARCH_MODE_KEY)
@@ -55,6 +55,7 @@ export default function DiscoverView({ t, lang, catalog, cart, onToggleCart }) {
 
     let accumulated = ''
     await streamChat(q, lang, mode, historyForThisTurn, {
+      userKey,
       onStep: (text) => setSteps((prev) => [...prev, text]),
       onToken: (text) => {
         accumulated += text

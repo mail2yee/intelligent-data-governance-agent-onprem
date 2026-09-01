@@ -114,6 +114,30 @@ class UnmatchedQuery(Base):
     reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class UserPreference(Base):
+    """Preferences extracted from a user's own past chat turns (see
+    preferences.py) - keyed by a lightweight, self-declared `user_key`
+    (a name/email typed into the frontend's profile dialog, stored in
+    the browser's localStorage), not a real authenticated identity.
+    There is no SSO/OIDC in this app yet (see main.py's submit_approval
+    docstring for the same underlying gap) - anyone can claim any
+    user_key. Acceptable for what this is: a personalization nicety, not
+    a security boundary, and the user can view/clear their own list at
+    any time (see the /api/preferences endpoints).
+    """
+
+    __tablename__ = "user_preferences"
+
+    user_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    # Short strings, capped at preferences.MAX_PREFERENCES - oldest/least
+    # useful dropped by the LLM itself when asked to fold in a new one
+    # past the cap (see preferences.py's prompt), not truncated here.
+    preferences: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
+
+
 engine = create_async_engine(settings.database_url, echo=False)
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 

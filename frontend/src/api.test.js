@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { queryProductData, streamChat } from './api'
+import { clearPreferences, getPreferences, queryProductData, streamChat } from './api'
 
 // Builds a fake fetch Response whose .body behaves enough like a real
 // ReadableStream for streamChat()'s reader.read()/TextDecoder loop -
@@ -137,6 +137,73 @@ describe('streamChat', () => {
     await streamChat('hi', 'en', 'ai', [], { onError: (e) => (error = e) })
 
     expect(error).not.toBeNull()
+  })
+
+  it('omits user_key from the request body when not provided', async () => {
+    global.fetch.mockResolvedValue(
+      makeSSEResponse([{ type: 'final', reply: '', matched_products: [], thinking_steps: [] }])
+    )
+
+    await streamChat('hi', 'en', 'ai', [], {})
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/chat',
+      expect.objectContaining({
+        body: JSON.stringify({ message: 'hi', lang: 'en', mode: 'ai', history: [] }),
+      })
+    )
+  })
+
+  it('includes user_key in the request body when provided', async () => {
+    global.fetch.mockResolvedValue(
+      makeSSEResponse([{ type: 'final', reply: '', matched_products: [], thinking_steps: [] }])
+    )
+
+    await streamChat('hi', 'en', 'ai', [], { userKey: 'tim@example.com' })
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/chat',
+      expect.objectContaining({
+        body: JSON.stringify({ message: 'hi', lang: 'en', mode: 'ai', history: [], user_key: 'tim@example.com' }),
+      })
+    )
+  })
+})
+
+describe('getPreferences / clearPreferences', () => {
+  beforeEach(() => {
+    global.fetch = vi.fn()
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('getPreferences fetches the user-keyed list', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ preferences: ['usually asks about capacity data'] }),
+    })
+
+    const body = await getPreferences('tim@example.com')
+
+    expect(global.fetch).toHaveBeenCalledWith('/api/preferences/tim%40example.com', expect.anything())
+    expect(body.preferences).toEqual(['usually asks about capacity data'])
+  })
+
+  it('clearPreferences sends a DELETE request', async () => {
+    global.fetch.mockResolvedValue({ ok: true, json: async () => ({ status: 'success' }) })
+
+    await clearPreferences('tim@example.com')
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/preferences/tim%40example.com',
+      expect.objectContaining({ method: 'DELETE' })
+    )
+  })
+
+  it('throws on a non-ok response', async () => {
+    global.fetch.mockResolvedValue({ ok: false, status: 500 })
+    await expect(getPreferences('tim@example.com')).rejects.toThrow('HTTP 500')
   })
 })
 

@@ -4,7 +4,7 @@ import ThinkingDots from './ThinkingDots'
 
 let msgSeq = 0
 
-export default function CopilotDock({ t, lang }) {
+export default function CopilotDock({ t, lang, userKey }) {
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
@@ -58,6 +58,7 @@ export default function CopilotDock({ t, lang }) {
     // (see DiscoverView.jsx for the general/AI search toggle, which only
     // applies to the Discover search box, not this chat panel).
     await streamChat(text, lang, 'ai', history, {
+      userKey,
       onStep: (stepText) => {
         setMessages((prev) =>
           prev.map((m) => (m.id === botId ? { ...m, kind: 'streaming', steps: [...m.steps, stepText] } : m))

@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy import select
 
+from . import preferences as preferences_mod
 from .config import settings
 from .db import DataProduct, UnmatchedQuery, async_session
 from .integrations import wrenai_client
@@ -207,7 +208,30 @@ def _format_history(history: list[dict] | None) -> str:
     return f"\n[Conversation so far]\n{lines}\n"
 
 
-def build_prompt(user_msg: str, lang: str, catalog: dict, history: list[dict] | None = None) -> str:
+def _format_preferences(preferences: list[str] | None) -> str:
+    """Same "structural context, not a new judgment call" shape as
+    _format_history() above - remembered facts from this user's *past*
+    conversations (see preferences.py), spliced in as background so an
+    ambiguous request can be interpreted with them in mind. Never a
+    reason by itself to recommend something the catalog doesn't actually
+    support - the prompts below say so explicitly."""
+    if not preferences:
+        return ""
+    lines = "\n".join(f"- {p}" for p in preferences)
+    return (
+        f"\n[Remembered preferences for this user, from past conversations - "
+        f"use only to help interpret ambiguous wording, never as a reason to "
+        f"recommend something not evidenced by the catalog]\n{lines}\n"
+    )
+
+
+def build_prompt(
+    user_msg: str,
+    lang: str,
+    catalog: dict,
+    history: list[dict] | None = None,
+    preferences: list[str] | None = None,
+) -> str:
     """Deliberately a plain 2-way match/no-match decision, not a 3-way
     classification that also tries to detect greetings - that was tried
     and reverted 2026-07-31: a small local model kept misclassifying
@@ -222,6 +246,7 @@ def build_prompt(user_msg: str, lang: str, catalog: dict, history: list[dict] | 
     lang_name = "English" if lang == "en" else "Traditional Chinese (繁體中文)"
     not_found_sentence = not_found_reply(catalog, lang)
     history_block = _format_history(history)
+    preferences_block = _format_preferences(preferences)
     followup_hint = (
         "\nThe latest message may be a follow-up or clarification to the conversation "
         "above (e.g. narrowing down after being asked which area a report is about) - "
@@ -239,6 +264,7 @@ def build_prompt(user_msg: str, lang: str, catalog: dict, history: list[dict] | 
     The catalog currently contains these data subjects:
     {knowledge_base}
     {history_block}
+    {preferences_block}
     The user's latest message is: "{user_msg}"{followup_hint}
 
     [Reply rules - zero hallucination]
@@ -252,7 +278,12 @@ def build_prompt(user_msg: str, lang: str, catalog: dict, history: list[dict] | 
     """
 
 
-def build_sql_prompt(user_msg: str, catalog: dict, history: list[dict] | None = None) -> str:
+def build_sql_prompt(
+    user_msg: str,
+    catalog: dict,
+    history: list[dict] | None = None,
+    preferences: list[str] | None = None,
+) -> str:
     """Prompt asking the LLM to write SQL against the data_products
     semantic model instead of recommending a subject in free text - the
     resulting SQL gets executed through WrenAI's governed engine
@@ -262,6 +293,7 @@ def build_sql_prompt(user_msg: str, catalog: dict, history: list[dict] | None = 
     text, but no longer trusted for deciding matched_products."""
     ids = json.dumps(list(catalog.keys()), ensure_ascii=False)
     history_block = _format_history(history)
+    preferences_block = _format_preferences(preferences)
     followup_hint = (
         "\nThe latest message may be a short follow-up to the conversation above (e.g. "
         "answering a clarifying question with just a keyword or two) - extract keywords "
@@ -279,6 +311,7 @@ def build_sql_prompt(user_msg: str, catalog: dict, history: list[dict] | None = 
     never convert your own keywords between scripts yourself).
     It currently has rows for exactly these ids: {ids}
     {history_block}
+    {preferences_block}
     The user's latest message is: "{user_msg}"{followup_hint}
 
     First, extract 2-4 short keywords or synonyms from the request,
@@ -287,7 +320,9 @@ def build_sql_prompt(user_msg: str, catalog: dict, history: list[dict] | None = 
     full-sentence substring will essentially never match it. Prefer a
     keyword specific enough to distinguish between catalog rows (e.g.
     "customer capacity" rather than just "customer", which most rows
-    would mention).
+    would mention). If the request itself is ambiguous but a remembered
+    preference above points at a specific topic, prefer keywords
+    consistent with that preference.
 
     Write ONE SQL SELECT statement, selecting only the `id` and `name`
     columns from `data_products`, using the standard SQL operator form
@@ -314,7 +349,10 @@ def _extract_sql(text: str) -> str:
 
 
 async def resolve_via_semantic_layer(
-    user_msg: str, catalog: dict, history: list[dict] | None = None
+    user_msg: str,
+    catalog: dict,
+    history: list[dict] | None = None,
+    preferences: list[str] | None = None,
 ) -> list[str]:
     """Ask the LLM to write SQL against the data_products semantic model
     and execute it through WrenAI's governed engine - matched ids come
@@ -330,7 +368,7 @@ async def resolve_via_semantic_layer(
     """
     sql_reply = ""
     async for piece in stream_chat_completion(
-        [{"role": "user", "content": build_sql_prompt(user_msg, catalog, history)}],
+        [{"role": "user", "content": build_sql_prompt(user_msg, catalog, history, preferences)}],
         model=settings.llm_sql_model or None,
     ):
         sql_reply += piece
@@ -419,7 +457,13 @@ async def keyword_search(user_msg: str, lang: str, catalog: dict) -> tuple[list[
 
 
 async def run_chat(
-    user_msg: str, lang: str, catalog: dict, mode: str = "ai", history: list[dict] | None = None
+    user_msg: str,
+    lang: str,
+    catalog: dict,
+    mode: str = "ai",
+    history: list[dict] | None = None,
+    user_key: str | None = None,
+    preferences: list[str] | None = None,
 ) -> AsyncIterator[str]:
     """Async generator of SSE event strings - step / token / final.
 
@@ -466,9 +510,10 @@ async def run_chat(
     yield step("🧠 收到需求，開始進行 Reasoning 與任務拆解...")
     yield step("🔍 正在檢索資料目錄...")
 
-    prompt = build_prompt(user_msg, lang, catalog, history)
+    prompt = build_prompt(user_msg, lang, catalog, history, preferences)
     matched_products: list[str] = []
     reply = ""
+    llm_reachable = True
 
     try:
         async for piece in stream_chat_completion([{"role": "user", "content": prompt}]):
@@ -493,7 +538,7 @@ async def run_chat(
         verified: list[str] | None = None
         try:
             yield step("🧬 透過語意層 (WrenAI) 驗證比對結果...")
-            verified = await resolve_via_semantic_layer(user_msg, catalog, history)
+            verified = await resolve_via_semantic_layer(user_msg, catalog, history, preferences)
         except Exception as e:
             yield step(
                 f"⚠️ 語意層驗證失敗（{e}），改用文字比對結果。"
@@ -530,5 +575,14 @@ async def run_chat(
         yield sse_event("token", text=reply)
         if not matched_products:
             yield step("⚠️ 判定此需求與資料目錄無關，已啟動 Zero Hallucination 攔截。")
+        llm_reachable = False
+
+    # Best-effort, after the reply is already fully decided - never
+    # blocks or changes what the user sees (see preferences.py's
+    # observe_and_update() docstring). Skipped when the LLM was
+    # unreachable this turn (llm_reachable=False) since the extraction
+    # call would just fail too - no point trying.
+    if user_key and llm_reachable:
+        await preferences_mod.observe_and_update(user_key, user_msg, reply)
 
     yield sse_event("final", reply=reply, matched_products=matched_products, thinking_steps=thinking_steps)

@@ -7,6 +7,7 @@ from app.chat import (
     GREETING_REPLY,
     _extract_sql,
     _format_history,
+    _format_preferences,
     build_prompt,
     build_sql_prompt,
     is_greeting,
@@ -491,3 +492,127 @@ async def test_run_chat_keyword_mode_ignores_history(monkeypatch):
         )
     )
     assert events[-1]["matched_products"] == ["customer-capacity-allocation"]
+
+
+def test_format_preferences_empty_returns_empty_string():
+    assert _format_preferences(None) == ""
+    assert _format_preferences([]) == ""
+
+
+def test_format_preferences_renders_list():
+    rendered = _format_preferences(["usually asks about capacity data", "prefers zh replies"])
+    assert "Remembered preferences" in rendered
+    assert "- usually asks about capacity data" in rendered
+    assert "- prefers zh replies" in rendered
+
+
+def test_build_prompt_omits_preferences_block_with_none_given():
+    prompt = build_prompt("capacity please", "en", CATALOG)
+    assert "Remembered preferences" not in prompt
+
+
+def test_build_prompt_includes_preferences_block():
+    prompt = build_prompt("capacity please", "en", CATALOG, preferences=["usually asks about capacity data"])
+    assert "Remembered preferences" in prompt
+    assert "usually asks about capacity data" in prompt
+
+
+def test_build_sql_prompt_includes_preferences_block():
+    prompt = build_sql_prompt(
+        "產能面的", KEYWORD_CATALOG, preferences=["usually asks about customer capacity data"]
+    )
+    assert "Remembered preferences" in prompt
+    assert "usually asks about customer capacity data" in prompt
+
+
+async def test_run_chat_passes_preferences_to_both_llm_calls(monkeypatch):
+    seen_prompts = []
+
+    async def _fake(messages, model=None):
+        prompt = messages[0]["content"]
+        seen_prompts.append(prompt)
+        if "Write ONE SQL" in prompt:
+            yield "SELECT id, name FROM data_products WHERE id = 'customer-capacity-allocation'"
+        else:
+            yield "Specific Customer Capacity Allocation looks relevant."
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _fake)
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    async def _fake_resolve(sql):
+        return [{"id": "customer-capacity-allocation", "name": "Specific Customer Capacity Allocation"}]
+
+    monkeypatch.setattr("app.chat.wrenai_client.resolve_matches", _fake_resolve)
+
+    events = await _collect_events(
+        run_chat("something", "en", CATALOG, preferences=["usually asks about customer capacity data"])
+    )
+    assert events[-1]["matched_products"] == ["customer-capacity-allocation"]
+    assert len(seen_prompts) == 2
+    assert all("usually asks about customer capacity data" in p for p in seen_prompts)
+
+
+async def test_run_chat_updates_preferences_when_user_key_given(monkeypatch):
+    async def _fake(messages, model=None):
+        yield "Specific Customer Capacity Allocation looks relevant."
+
+    async def _broken_resolve(sql):
+        raise Exception("WrenAI unavailable in this test")
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _fake)
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+    monkeypatch.setattr("app.chat.wrenai_client.resolve_matches", _broken_resolve)
+
+    captured = {}
+
+    async def _fake_observe(user_key, user_msg, reply):
+        captured["user_key"] = user_key
+        captured["user_msg"] = user_msg
+        captured["reply"] = reply
+
+    monkeypatch.setattr("app.chat.preferences_mod.observe_and_update", _fake_observe)
+
+    await _collect_events(run_chat("capacity please", "en", CATALOG, user_key="tim@example.com"))
+    assert captured["user_key"] == "tim@example.com"
+    assert captured["user_msg"] == "capacity please"
+
+
+async def test_run_chat_skips_preferences_update_without_user_key(monkeypatch):
+    async def _fake(messages, model=None):
+        yield "Specific Customer Capacity Allocation looks relevant."
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _fake)
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    async def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("observe_and_update should not be called without a user_key")
+
+    monkeypatch.setattr("app.chat.preferences_mod.observe_and_update", _should_not_be_called)
+
+    await _collect_events(run_chat("capacity please", "en", CATALOG))  # must not raise
+
+
+async def test_run_chat_skips_preferences_update_when_llm_unreachable(monkeypatch):
+    async def _broken_stream(messages, model=None):
+        raise ConnectionError("no route to host")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _broken_stream)
+
+    async def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("observe_and_update should not be called when the LLM is unreachable")
+
+    monkeypatch.setattr("app.chat.preferences_mod.observe_and_update", _should_not_be_called)
+
+    await _collect_events(run_chat("capacity please", "en", CATALOG, user_key="tim@example.com"))
+
+
+async def test_run_chat_keyword_mode_skips_preferences_update(monkeypatch):
+    async def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("observe_and_update should not be called in keyword mode")
+
+    monkeypatch.setattr("app.chat.preferences_mod.observe_and_update", _should_not_be_called)
+
+    await _collect_events(
+        run_chat("capacity 客戶", "zh", KEYWORD_CATALOG, mode="keyword", user_key="tim@example.com")
+    )

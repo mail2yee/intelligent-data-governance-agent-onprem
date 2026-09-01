@@ -7,10 +7,18 @@ import ConnectionCodeDialog from './components/ConnectionCodeDialog'
 import CopilotDock from './components/CopilotDock'
 import DiscoverView from './components/DiscoverView'
 import NavRail from './components/NavRail'
+import ProfileDialog from './components/ProfileDialog'
 import SubmitDialog from './components/SubmitDialog'
 import Toast from './components/Toast'
 import TopBar from './components/TopBar'
 import { makeT } from './i18n'
+
+// Lightweight, self-declared identity (see ProfileDialog.jsx / HANDOFF.md
+// "Personal chat preference memory") - not a real login, just a name/email
+// the browser remembers so the backend can key preferences by it across
+// sessions. Same persisted-in-localStorage pattern as DiscoverView's
+// search-mode toggle.
+const USER_KEY_STORAGE = 'dgo_user_key'
 
 function App() {
   const [lang, setLang] = useState('zh')
@@ -22,6 +30,8 @@ function App() {
   const [submitOpen, setSubmitOpen] = useState(false)
   const [codeProductId, setCodeProductId] = useState(null)
   const [toast, setToast] = useState({ message: '', visible: false })
+  const [userKey, setUserKey] = useState(() => localStorage.getItem(USER_KEY_STORAGE) || '')
+  const [profileOpen, setProfileOpen] = useState(false)
   const toastTimer = useRef(null)
 
   const t = makeT(lang)
@@ -97,21 +107,37 @@ function App() {
     refreshTickets()
   }
 
+  function saveUserKey(next) {
+    setUserKey(next)
+    if (next) localStorage.setItem(USER_KEY_STORAGE, next)
+    else localStorage.removeItem(USER_KEY_STORAGE)
+    setProfileOpen(false)
+  }
+
   const pendingCount = tickets.filter((tk) => tk.status === 'PENDING_APPROVAL').length
 
   return (
     <div className="shell">
       <TopBar
         t={t}
+        userKey={userKey}
         onToggleLang={() => setLang((l) => (l === 'zh' ? 'en' : 'zh'))}
         onToggleTheme={() => setTheme((th) => (th === 'dark' ? 'light' : 'dark'))}
+        onOpenProfile={() => setProfileOpen(true)}
       />
 
       <NavRail t={t} view={view} onChangeView={changeView} pendingCount={pendingCount} />
 
       <main className="main">
         {view === 'discover' && (
-          <DiscoverView t={t} lang={lang} catalog={catalog} cart={cart} onToggleCart={toggleCart} />
+          <DiscoverView
+            t={t}
+            lang={lang}
+            catalog={catalog}
+            cart={cart}
+            onToggleCart={toggleCart}
+            userKey={userKey}
+          />
         )}
         {view === 'approvals' && (
           <ApprovalsView t={t} tickets={tickets} onApprove={handleApprove} onShowCode={setCodeProductId} />
@@ -120,7 +146,7 @@ function App() {
 
       <CartBar t={t} cart={cart} onReview={() => setSubmitOpen(true)} />
 
-      <CopilotDock t={t} lang={lang} />
+      <CopilotDock t={t} lang={lang} userKey={userKey} />
 
       <SubmitDialog
         t={t}
@@ -133,6 +159,14 @@ function App() {
       />
 
       <ConnectionCodeDialog t={t} productId={codeProductId} onClose={() => setCodeProductId(null)} />
+
+      <ProfileDialog
+        t={t}
+        open={profileOpen}
+        userKey={userKey}
+        onSave={saveUserKey}
+        onClose={() => setProfileOpen(false)}
+      />
 
       <Toast message={toast.message} visible={toast.visible} />
     </div>

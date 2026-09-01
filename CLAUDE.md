@@ -69,10 +69,20 @@ things left off.
   on a small local model, see HANDOFF.md's "Greeting detection fix"
   section) in favor of offline, human-reviewed query mining
   (`backend/scripts/review_unmatched_queries.py`).
-- Backend: `ruff` + `mypy` clean, 110 pytest tests (`backend/tests/`) plus
+- Backend: `ruff` + `mypy` clean, 143 pytest tests (`backend/tests/`) plus
   a separate DeepEval-based LLM-judge eval suite (`backend/evals/`, not
   part of a bare `pytest` run - see `backend/README.md`'s "Evals"
-  section). Frontend: `oxlint` clean, 43 vitest tests. All pass.
+  section). Frontend: `oxlint` clean, 58 vitest tests. All pass.
+- Personal chat preference memory (`backend/app/preferences.py`,
+  2026-09-01) - a self-declared, non-authenticated `user_key` (typed
+  into the top-bar profile dialog, `localStorage`-only) lets the LLM
+  extract and remember short preference statements across sessions,
+  spliced into future prompts as background context. Not a security
+  boundary - see HANDOFF.md's "Personal chat preference memory" section
+  before touching auth assumptions here, and note the extraction call
+  deliberately does NOT use `settings.llm_sql_model` (a real bug: that
+  model reliably produces malformed output for this task - confirmed
+  live).
 - LLM integration (OpenAI-compatible assumption) is confirmed working
   against a real local Ollama, but **not yet against the company's
   actual on-prem gateway** - pointing both the app (`backend/.env`) and
