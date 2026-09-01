@@ -37,6 +37,9 @@ spec:
         - name: wait-for-camunda
           image: busybox:1.36
           command: ["sh", "-c", "until nc -z camunda 8080; do echo waiting for camunda; sleep 2; done"]
+        - name: wait-for-fab-business-db
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z fab-business-db 5432; do echo waiting for fab-business-db; sleep 2; done"]
       containers:
         - name: backend
           image: ghcr.io/mail2yee/intelligent-data-governance-agent-onprem-backend:latest
@@ -53,6 +56,22 @@ spec:
               value: http://camunda:8080/engine-rest
             - name: DATAHUB_API_URL
               value: http://datahub-gms:8080
+            # Second WrenAI project (see 17-fab-business-db.yaml and
+            # backend/app/integrations/business_data.py) - fake demo
+            # credentials, same reasoning as that manifest's plain
+            # POSTGRES_PASSWORD (not a real secret worth a K8s Secret).
+            - name: WREN_BUSINESS_PROJECT_PATH
+              value: /app/wren_business_capacity_plan
+            - name: FAB_BUSINESS_DB_HOST
+              value: fab-business-db
+            - name: FAB_BUSINESS_DB_PORT
+              value: "5432"
+            - name: FAB_BUSINESS_DB_NAME
+              value: capacity_mgmt
+            - name: FAB_BUSINESS_DB_USER
+              value: fab_ops
+            - name: FAB_BUSINESS_DB_PASSWORD
+              value: fab_ops
           readinessProbe:
             httpGet:
               path: /health

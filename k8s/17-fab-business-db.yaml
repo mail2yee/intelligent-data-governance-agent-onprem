@@ -1,0 +1,188 @@
+# Ported from docker-compose.yml's fab-business-db service (2026-08-31)
+# - the fake business database for real, governed NL-to-SQL against
+# actual business data (see backend/app/integrations/business_data.py
+# and HANDOFF.md's "Real NL-to-SQL against business data" section).
+# StatefulSet+PVC for the same reason 01-mariadb.yaml is one, not a
+# plain Deployment - this owns real (if fake) data, not a cache.
+#
+# The ConfigMap below is a generated copy of
+# ../business_data/seed_capacity_mgmt.sql (via `kubectl create
+# configmap --from-file --dry-run=client -o yaml`) - K8s has no
+# equivalent of docker-compose.yml's bind mount, so this is how that
+# file's content actually reaches the pod. **Regenerate this ConfigMap
+# if the source .sql file ever changes** - there is no automatic sync,
+# same drift risk already called out between this SQL file and
+# ../wren/business_capacity_plan/models/*.yml's MDL.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fab-business-db-seed
+  namespace: dgo
+data:
+  seed_capacity_mgmt.sql: |
+    -- Fake business data for the "customer-capacity-allocation" catalog
+    -- product's real underlying database (see docker-compose.yml's
+    -- fab-business-db service and HANDOFF.md's "Real NL-to-SQL against
+    -- business data" section). Auto-run by the postgres image's own
+    -- docker-entrypoint-initdb.d mechanism on first container start (only
+    -- - never re-runs against an existing data volume, matching every
+    -- other init-once script in this repo).
+    --
+    -- Table/column names here are what
+    -- wren/business_capacity_plan/models/*.yml's MDL actually declares -
+    -- keep both in sync if either changes. Entirely fictional company
+    -- names/numbers, not real business data.
+
+    CREATE TABLE capacity_plan (
+        id SERIAL PRIMARY KEY,
+        customer_name VARCHAR(100) NOT NULL,
+        product_node VARCHAR(20) NOT NULL,
+        week_start DATE NOT NULL,
+        allocated_capacity INT NOT NULL,
+        actual_wafer_starts INT NOT NULL,
+        utilization_pct NUMERIC(5, 2) NOT NULL
+    );
+
+    CREATE TABLE customer_commitment (
+        id SERIAL PRIMARY KEY,
+        customer_name VARCHAR(100) NOT NULL,
+        commitment_quarter VARCHAR(10) NOT NULL,
+        committed_volume INT NOT NULL,
+        confirmed_volume INT NOT NULL,
+        status VARCHAR(20) NOT NULL
+    );
+
+    CREATE TABLE wafer_start_actuals (
+        id SERIAL PRIMARY KEY,
+        lot_id VARCHAR(20) NOT NULL,
+        customer_name VARCHAR(100) NOT NULL,
+        product_node VARCHAR(20) NOT NULL,
+        start_date DATE NOT NULL,
+        wafer_count INT NOT NULL,
+        fab_line VARCHAR(20) NOT NULL
+    );
+
+    INSERT INTO capacity_plan (customer_name, product_node, week_start, allocated_capacity, actual_wafer_starts, utilization_pct) VALUES
+        ('Acme Semiconductor', 'N5', '2026-08-03', 1200, 1150, 95.83),
+        ('Acme Semiconductor', 'N5', '2026-08-10', 1200, 1180, 98.33),
+        ('Acme Semiconductor', 'N5', '2026-08-17', 1250, 1240, 99.20),
+        ('Nova Photonics', 'N7', '2026-08-03', 800, 720, 90.00),
+        ('Nova Photonics', 'N7', '2026-08-10', 800, 790, 98.75),
+        ('Nova Photonics', 'N7', '2026-08-17', 850, 810, 95.29),
+        ('Zenith Circuits', 'N5', '2026-08-03', 600, 540, 90.00),
+        ('Zenith Circuits', 'N5', '2026-08-10', 600, 610, 101.67),
+        ('Zenith Circuits', 'N5', '2026-08-17', 650, 630, 96.92);
+
+    INSERT INTO customer_commitment (customer_name, commitment_quarter, committed_volume, confirmed_volume, status) VALUES
+        ('Acme Semiconductor', '2026-Q3', 15000, 14800, 'Confirmed'),
+        ('Acme Semiconductor', '2026-Q4', 16000, 12000, 'Tentative'),
+        ('Nova Photonics', '2026-Q3', 9500, 9500, 'Confirmed'),
+        ('Nova Photonics', '2026-Q4', 10000, 6000, 'Tentative'),
+        ('Zenith Circuits', '2026-Q3', 7200, 7100, 'Confirmed'),
+        ('Zenith Circuits', '2026-Q4', 7800, 4000, 'Tentative');
+
+    INSERT INTO wafer_start_actuals (lot_id, customer_name, product_node, start_date, wafer_count, fab_line) VALUES
+        ('LOT-A1001', 'Acme Semiconductor', 'N5', '2026-08-17', 25, 'FAB-3'),
+        ('LOT-A1002', 'Acme Semiconductor', 'N5', '2026-08-18', 25, 'FAB-3'),
+        ('LOT-A1003', 'Acme Semiconductor', 'N5', '2026-08-19', 24, 'FAB-3'),
+        ('LOT-N2001', 'Nova Photonics', 'N7', '2026-08-17', 20, 'FAB-2'),
+        ('LOT-N2002', 'Nova Photonics', 'N7', '2026-08-18', 22, 'FAB-2'),
+        ('LOT-Z3001', 'Zenith Circuits', 'N5', '2026-08-17', 18, 'FAB-3'),
+        ('LOT-Z3002', 'Zenith Circuits', 'N5', '2026-08-18', 21, 'FAB-3');
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: fab-business-db
+  namespace: dgo
+spec:
+  serviceName: fab-business-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fab-business-db
+  template:
+    metadata:
+      labels:
+        app: fab-business-db
+    spec:
+      # See 01-mariadb.yaml's comment - avoids K8s's auto-injected
+      # $<SERVICE>_PORT env vars colliding with this app's own vars.
+      enableServiceLinks: false
+      containers:
+        - name: postgres
+          image: ghcr.io/mail2yee/postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: fab_ops
+            # Fake demo data, not a real credential - same reasoning as
+            # datahub-mysql.yaml's plain-literal password, unlike
+            # mariadb's real Secret-backed one.
+            - name: POSTGRES_PASSWORD
+              value: fab_ops
+            - name: POSTGRES_DB
+              value: capacity_mgmt
+            # A GCE Persistent Disk is freshly formatted ext4, which
+            # always creates a `lost+found` directory at the volume
+            # root - the exact same issue already hit and fixed for
+            # Kafka's LogManager on this cluster (see k8s/README.md's
+            # "GKE-specific bugs" section). Postgres's initdb refuses to
+            # initialize into a non-empty directory, and `lost+found`
+            # alone is enough to trip that check. Fixed proactively
+            # here (not yet hit and debugged live, unlike the Kafka
+            # case) by pointing PGDATA at an empty subdirectory of the
+            # PVC instead of its root - the image supports this
+            # natively, no entrypoint changes needed.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: fabbusinessdbdata
+              mountPath: /var/lib/postgresql/data
+            - name: seed-script
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U fab_ops -d capacity_mgmt"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U fab_ops -d capacity_mgmt"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+      volumes:
+        - name: seed-script
+          configMap:
+            name: fab-business-db-seed
+  volumeClaimTemplates:
+    - metadata:
+        name: fabbusinessdbdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fab-business-db
+  namespace: dgo
+spec:
+  selector:
+    app: fab-business-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None # headless - StatefulSet convention, same as 01-mariadb.yaml

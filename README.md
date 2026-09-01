@@ -26,6 +26,8 @@ Camunda), and what business logic / UI direction to carry over.
 
 **2026-08-30：新增 GKE demo 部署，跟公司內網無關，純粹是「給特定人看」用途。** 完整架構搬到 `k8s/` 目錄（`docker-compose.yml`/overlay 的手寫 K8s 版本，StatefulSet+PVC 處理所有有狀態服務），真的部署上一個 GKE cluster，用 Google Identity-Aware Proxy（IAP）限制只有指定的 Google 帳號能連得進去，HTTPS 走 Google-managed 憑證。過程中發現 GKE 舊版 Ingress 控制器整個罷工（連一次同步都沒有，兩個不同 cluster 都一樣，Google 管控平面內部元件、指令行完全查不到原因），改用 Gateway API（Google 現在主推的新架構）才真正跑起來。細節、實際部署步驟、踩過的坑全部寫在 `k8s/README.md`。
 
+**2026-09-01：把 GKE demo 更新到最新版。** 部署後這幾天陸續做的四個功能（多輪澄清、真的查詢業務資料、記住個人偏好、依知識庫回答）一直沒同步上去（`imagePullPolicy: Always` 只有新 pod 才會重新 pull，不會自動更新已經在跑的 pod）。新增 `k8s/17-fab-business-db.yaml`（NL-to-SQL 功能需要的 Postgres StatefulSet），並且在真的部署之前就先把 Kafka 已經踩過一次的「GCE Persistent Disk 格式化後會有 `lost+found` 目錄，導致 initdb 誤判資料夾非空」問題用 `PGDATA` 指向子目錄先避開——不是又踩了一次坑才修，是靠印象中的舊坑主動預防。重建、推送 image，`kubectl apply` + 重啟 backend/frontend 後，直接對著真正的 Claude 模型跑過一輪驗證：知識庫問答、業務資料 NL-to-SQL（含兩層 gate）、記住偏好三個功能都在 GKE 上正常運作。
+
 **2026-08-31：新增「真的查詢實際業務資料」的 NL-to-SQL 功能。** 之前 WrenAI 只用來比對目錄 metadata（哪個資料主體符合需求），從沒真的接過底層業務資料庫。這次另外建了一個獨立的假業務資料庫（`fab-business-db`，Postgres，自己的 WrenAI project——WrenAI 一個 project 只能接一個實體連線，不能沿用目錄那個），並且用兩層 gate 保護：一是 registry（`business_data.py` 的 `PRODUCT_DATA_SOURCES`，目前只接了 `customer-capacity-allocation` 一個），二是要有一張真的 APPROVED 票單涵蓋這個 product——兩個都在後端強制檢查，不是只靠前端藏按鈕。連線程式碼對話框裡新增「直接查詢這份資料」欄位。整個流程（種子資料、兩個 WrenAI project 建置、核准前擋下來、核准後真的查到資料、瀏覽器實測）都跑過真實環境驗證，細節見 `HANDOFF.md`「Real NL-to-SQL against business data」。
 
 **2026-09-01：新增「記住個人對話偏好」功能。** 這是使用者原本 5 項 agent 願望清單的第 1 項。因為系統目前沒有真的登入機制，先跟使用者確認過兩個範圍決策：身分用輕量、非驗證的 `user_key`（在右上角新的「你的稱呼」對話框裡設定，只存在瀏覽器 localStorage）；「記住偏好」指的是萃取成具體的偏好描述（例如「常問產能相關資料」），不是存整段逐字對話紀錄。這份偏好清單會被塞進之後的 prompt 當背景資訊，明確規定只能用來輔助解讀模糊問題，不能當作推薦目錄以外資料的理由。實測時抓到一個真的 bug：偏好萃取一開始沿用了 SQL 專用模型（`llama3-groq-tool-use:8b`），結果那個模型在這個任務上穩定回傳格式錯誤的 JSON，改用預設的對話模型後才正常——這個問題是靠真的跑過本機 Ollama 才發現的，不是看程式碼看出來的。整個流程（真的讓 LLM 從對話中萃取偏好、存起來、下次模糊提問時真的影響回覆內容、瀏覽器上設定/清除偏好）都跑過真實環境驗證，細節見 `HANDOFF.md`「Personal chat preference memory」。
@@ -232,7 +234,15 @@ pytest backend/evals/ -v -s
   real Persistent Disk permissions, a stale GHCR image, and — the big
   one — the classic Ingress-GCE controller never working at all on two
   separate clusters, fixed by switching to Gateway API) are documented
-  in `k8s/README.md`, not repeated here.
+  in `k8s/README.md`, not repeated here. **Updated 2026-09-01** to catch
+  up to every feature landed since the initial deployment (multi-turn
+  clarification, NL-to-SQL against business data, preference memory, KM
+  answering) — added a new `fab-business-db` StatefulSet (proactively
+  avoided the same GCE-PD `lost+found` issue already hit for Kafka, via
+  `PGDATA` pointed at an empty subdirectory), rebuilt/pushed fresh
+  images, rolled out, and verified live end-to-end against the real
+  Claude-backed deployment — see `k8s/README.md`'s "What's actually
+  running" section.
 
 ## Architecture
 

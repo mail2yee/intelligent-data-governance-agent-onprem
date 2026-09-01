@@ -21,8 +21,9 @@ the real, current state and the real bugs hit getting there.
 
 ## What's actually running
 
-- **11 app workloads** (mariadb, camunda, backend, frontend, DataHub's
-  7 services) all `1/1 Running`, zero restarts, confirmed stable.
+- **12 app workloads** (mariadb, camunda, backend, frontend,
+  `fab-business-db`, DataHub's 7 services) all `1/1 Running`, zero
+  restarts, confirmed stable.
 - **Public URL**: `https://idg-ai.yeeshen.com`, real Google-managed TLS
   (Certificate Manager, `ACTIVE` status), restricted via **Identity-Aware
   Proxy** to a single Google account (`mail2yee@gmail.com`) - anyone
@@ -36,6 +37,33 @@ the real, current state and the real bugs hit getting there.
   instance, so a real internet-reachable LLM was required for AI-mode
   search to actually work rather than always hitting the
   graceful-fallback path.
+- **2026-09-01: caught up to every backend/app feature landed since the
+  initial 2026-08-30 deployment** (multi-turn clarification, real
+  NL-to-SQL against business data, personal chat preference memory, KM
+  answering) - the demo had been sitting on the 2026-08-30 image the
+  whole time (`imagePullPolicy: Always` only repulls on a new pod, it
+  doesn't retroactively update already-running ones). Added
+  `17-fab-business-db.yaml` (a new Postgres StatefulSet for the
+  NL-to-SQL feature - see `backend/app/integrations/business_data.py`)
+  and the matching env vars/initContainer in `03-backend.yaml`, rebuilt
+  and pushed fresh `backend`/`frontend` images, then `kubectl apply -f
+  k8s/` + `kubectl rollout restart deployment/backend deployment/frontend
+  -n dgo`. **Proactively avoided a real bug before it could happen**:
+  the exact same GCE-Persistent-Disk `lost+found` issue already hit and
+  fixed for Kafka (see "GKE-specific bugs" below) also applies to
+  Postgres's `initdb` - fixed via `PGDATA=/var/lib/postgresql/data/pgdata`
+  (an empty subdirectory of the PVC) before ever deploying, confirmed
+  clean on the real disk (seed data loaded correctly on first try, no
+  `lost+found`-related failure). Verified live end-to-end against the
+  real Claude-backed deployment (not just pod health): a real KM policy
+  question answered correctly with a citation and a follow-up; the
+  NL-to-SQL registry/approval gates both correctly blocked, then a real
+  approved ticket's query returned real aggregated rows from
+  `fab-business-db`; and a preference-revealing chat message got
+  correctly extracted and persisted (Claude extracted *two* preferences
+  from one exchange - topic and reply-language - a genuinely more
+  capable extraction than the local Ollama judge model managed in
+  `backend/evals/EVAL_LOG.md`'s local testing).
 
 ## The real routing story: classic Ingress is abandoned, this uses Gateway API
 
@@ -378,3 +406,14 @@ for the fixes actually applied):
   compose build backend && docker compose push backend` once this was
   caught; a reminder to actually rebuild+push after dependency changes
   before assuming a `:latest` GHCR tag is current.
+- **The same `lost+found`-on-a-fresh-PD issue above also applies to
+  Postgres's `initdb`** (2026-09-01, `17-fab-business-db.yaml`) - it
+  refuses to initialize into a non-empty data directory, and a bare
+  `lost+found` from ext4 formatting is enough to trip that check. Unlike
+  the Kafka case, this one was **fixed proactively before ever
+  deploying** (recognized the pattern from the bullet above, not
+  rediscovered by trial and error) via `PGDATA=/var/lib/postgresql/data/pgdata`
+  - the official image supports pointing `PGDATA` at an empty
+  subdirectory of the mounted volume natively, no entrypoint script
+  changes needed. Confirmed clean on the first real deploy: seed data
+  loaded correctly, no failure.
