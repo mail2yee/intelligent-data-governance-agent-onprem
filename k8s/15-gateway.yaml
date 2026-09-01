@@ -32,8 +32,16 @@ metadata:
 spec:
   gatewayClassName: gke-l7-global-external-managed
   addresses:
+    # Swapped 2026-09-02 from dgo-demo-ip (136.68.20.162) to
+    # dgo-demo-ip-2 - a corporate web filter had 136.68.20.162
+    # miscategorized as gambling (stale reputation almost certainly
+    # inherited from whichever GCP customer had this address before it
+    # was reclaimed into the shared pool and reassigned here - a known
+    # risk with cloud provider IP churn, not anything about this app or
+    # domain). dgo-demo-ip is left reserved, unreleased, until the new
+    # address is confirmed working end-to-end - see k8s/README.md.
     - type: NamedAddress
-      value: dgo-demo-ip
+      value: dgo-demo-ip-2
   listeners:
     - name: https
       protocol: HTTPS

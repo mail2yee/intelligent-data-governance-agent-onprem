@@ -64,6 +64,36 @@ the real, current state and the real bugs hit getting there.
   from one exchange - topic and reply-language - a genuinely more
   capable extraction than the local Ollama judge model managed in
   `backend/evals/EVAL_LOG.md`'s local testing).
+- **2026-09-02: swapped the static IP after a corporate web filter
+  miscategorized the original one as gambling.** `dgo-demo-ip`
+  (`136.68.20.162`) got blocked by a company proxy under a "gambling"
+  category - almost certainly stale reputation inherited from whichever
+  GCP customer had this address before Google reclaimed it into the
+  shared pool and reassigned it here, not anything about this app or
+  domain (a real, known risk with cloud-provider IP churn - third-party
+  web-filter categorization databases don't always get updated when an
+  IP changes hands). Fixed by reserving a new address
+  (`gcloud compute addresses create dgo-demo-ip-2 --global`,
+  `34.102.255.78`) and pointing `15-gateway.yaml`'s `Gateway.spec.addresses`
+  at its name instead - the Gateway references addresses by name, not
+  literal IP, so this was the only manifest change needed; the
+  Certificate Manager cert map entry is keyed by hostname
+  (`idg-ai.yeeshen.com`), not IP, so it needed no changes at all.
+  Verified the new address serves correctly (valid TLS handshake, real
+  cert, IAP challenge responds) *before* touching the old one - **note
+  for testing this yourself**: `curl`'s `--resolve` trick only forces
+  the correct SNI/Host header when the URL itself uses the hostname
+  (`https://idg-ai.yeeshen.com --resolve idg-ai.yeeshen.com:443:<ip>`) -
+  putting the literal IP directly in the URL sends no SNI at all and
+  the TLS handshake fails with `SSL_ERROR_SYSCALL`, which looks
+  identical to a real routing failure and cost real debugging time
+  here. `dgo-demo-ip` is deliberately left reserved (not released) until
+  DNS is confirmed repointed at the new address and the site's been
+  used for a while without issue - release it explicitly once that's
+  confirmed:
+  ```bash
+  gcloud compute addresses delete dgo-demo-ip --global
+  ```
 
 ## The real routing story: classic Ingress is abandoned, this uses Gateway API
 
@@ -340,6 +370,11 @@ gcloud iap web add-iam-policy-binding \
 **Do this when you're done demoing** - see the cost warning below.
 ```bash
 gcloud container clusters delete dgo-demo --zone=asia-east1-a
+# dgo-demo-ip-2 is the address actually in use as of 2026-09-02 (see
+# "What's actually running" above) - dgo-demo-ip is the original,
+# currently kept reserved as a fallback but no longer bound to
+# anything; delete whichever of these still exist for you.
+gcloud compute addresses delete dgo-demo-ip-2 --global
 gcloud compute addresses delete dgo-demo-ip --global
 gcloud certificate-manager maps entries delete dgo-demo-cert-map-entry --map=dgo-demo-cert-map
 gcloud certificate-manager maps delete dgo-demo-cert-map
