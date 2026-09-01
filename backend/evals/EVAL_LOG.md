@@ -11,6 +11,55 @@ judge or trial config) - not every ad-hoc local run.
 
 ---
 
+## 2026-09-01
+
+- Config: `DGO_EVAL_TRIALS=1` (same reason as 2026-08-03 - local Ollama
+  too slow for repeated trials on this machine), judge model
+  `qwen2.5:latest` (local Ollama), app models: `LLM_MODEL=qwen3:14b`,
+  `LLM_SQL_MODEL=llama3-groq-tool-use:8b`.
+- Context: user asked to check whether the score had moved after this
+  session's four feature additions (multi-turn clarification, real
+  NL-to-SQL against business data, personal chat preference memory, KM
+  answering). None of the golden queries below contain any KM keyword
+  (`km.find_relevant_docs()` correctly returns `[]` for all 6, confirmed
+  by inspection - see `km.py`'s keyword lists), and this harness doesn't
+  pass `user_key`/`history`, so `build_prompt()`/`build_sql_prompt()`'s
+  new preferences/history blocks stay empty exactly as before those
+  params existed. In other words: **none of this session's code changes
+  actually touch the path these 6 queries exercise** - this run is a
+  sanity check, not expected to move for code reasons.
+
+| Golden query | Pass rate | 2026-08-03 | Metrics evaluated |
+|---|---|---|---|
+| `zh-capacity` | 0.67 | 0.67 | 3 |
+| `zh-demand-orders` | 1.00 | 1.00 | 3 |
+| `zh-move-forecast` | 0.67 | 0.67 | 3 |
+| `zh-out-of-catalog-salary` | 1.00 | 0.00 | 1 |
+| `en-capacity` | 1.00 | 1.00 | 3 |
+| `en-out-of-catalog-weather` | 0.00 | 0.00 | 1 |
+
+- **Reading**: the 4 in-catalog-relevant queries are byte-for-byte
+  identical to 2026-08-03. Only the two out-of-catalog queries moved
+  (`zh-out-of-catalog-salary` 0.00 → 1.00), and this is the exact same
+  quirk 2026-08-03 already identified, not a new finding: confirmed by
+  reproducing `en-out-of-catalog-weather` directly against the running
+  app - `matched_products` is correctly `[]` (the hard, non-judged
+  governance assertion passed on every trial, both runs), but the reply
+  text is `not_found_reply()`'s helpful "Currently available data
+  subjects: FAB Production Move Forecast Summary, Customer Demand Wafer
+  Orders, Specific Customer Capacity Allocation..." clarifying list
+  (added 2026-08-27) - the `RecommendationPrecision` judge inconsistently
+  reads that catalog listing as if it were a spurious recommendation.
+  Same root cause, same known limitation, just non-deterministically
+  triggered differently across runs - `not_found_reply()` itself is
+  unchanged since 2026-08-27. The open question already raised
+  2026-08-03 (scope `RecommendationPrecision` to `golden.in_catalog`
+  queries only, since "correctly declining to recommend anything" isn't
+  really what that metric is designed to judge) is still open, still not
+  acted on.
+
+---
+
 ## 2026-08-03
 
 - Config: `DGO_EVAL_TRIALS=1` (dropped from 2 - see below), judge model
