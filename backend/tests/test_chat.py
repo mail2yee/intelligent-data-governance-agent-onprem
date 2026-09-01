@@ -616,3 +616,85 @@ async def test_run_chat_keyword_mode_skips_preferences_update(monkeypatch):
     await _collect_events(
         run_chat("capacity 客戶", "zh", KEYWORD_CATALOG, mode="keyword", user_key="tim@example.com")
     )
+
+
+async def test_run_chat_km_match_answers_from_km_without_catalog_flow(monkeypatch):
+    call_count = 0
+
+    async def _fake(messages, model=None):
+        nonlocal call_count
+        call_count += 1
+        prompt = messages[0]["content"]
+        assert "policy assistant" in prompt  # only ever called with the KM prompt
+        yield "Gold requires a 95%+ quality score, per the maturity policy."
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _fake)
+
+    events = await _collect_events(run_chat("什麼是 Gold 等級？", "zh", CATALOG))
+    assert call_count == 1  # catalog flow's build_prompt/build_sql_prompt calls never happened
+    final = events[-1]
+    assert final["type"] == "final"
+    assert final["matched_products"] == []
+    assert "95%" in final["reply"]
+    step_texts = [e["text"] for e in events if e["type"] == "step"]
+    assert any("知識庫" in t for t in step_texts)
+
+
+async def test_run_chat_km_no_keyword_hit_falls_through_to_catalog_flow(monkeypatch):
+    async def _fake(messages, model=None):
+        yield "Specific Customer Capacity Allocation looks relevant."
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _fake)
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    async def _fake_resolve(sql):
+        return [{"id": "customer-capacity-allocation", "name": "Specific Customer Capacity Allocation"}]
+
+    monkeypatch.setattr("app.chat.wrenai_client.resolve_matches", _fake_resolve)
+
+    events = await _collect_events(run_chat("capacity please", "en", CATALOG))
+    assert events[-1]["matched_products"] == ["customer-capacity-allocation"]
+    step_texts = [e["text"] for e in events if e["type"] == "step"]
+    assert not any("knowledge base" in t.lower() for t in step_texts)
+
+
+async def test_run_chat_km_failure_falls_through_to_catalog_matching(monkeypatch):
+    async def _fake(messages, model=None):
+        prompt = messages[0]["content"]
+        if "policy assistant" in prompt:
+            raise ConnectionError("KM LLM call failed")
+        yield "Specific Customer Capacity Allocation looks relevant."
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _fake)
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _noop_sync)
+
+    async def _fake_resolve(sql):
+        return [{"id": "customer-capacity-allocation", "name": "Specific Customer Capacity Allocation"}]
+
+    monkeypatch.setattr("app.chat.wrenai_client.resolve_matches", _fake_resolve)
+
+    # "gold" is a KM keyword, so this still routes into the KM path first,
+    # but that path fails - must gracefully fall through to the normal
+    # catalog-matching flow rather than erroring the whole turn out.
+    events = await _collect_events(run_chat("gold capacity please", "en", CATALOG))
+    final = events[-1]
+    assert final["type"] == "final"
+    assert final["matched_products"] == ["customer-capacity-allocation"]
+    step_texts = [e["text"] for e in events if e["type"] == "step"]
+    assert any("KM answer failed" in t for t in step_texts)
+
+
+async def test_run_chat_km_prompt_includes_history(monkeypatch):
+    seen_prompts = []
+
+    async def _fake(messages, model=None):
+        seen_prompts.append(messages[0]["content"])
+        yield "Silver requires 80-95% quality, per the maturity policy."
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _fake)
+
+    history = [{"role": "assistant", "content": "Gold requires a 95%+ quality score."}]
+    await _collect_events(run_chat("那 Silver 呢？maturity", "zh", CATALOG, history=history))
+    assert len(seen_prompts) == 1
+    assert "[Conversation so far]" in seen_prompts[0]
+    assert "Gold requires a 95%+ quality score" in seen_prompts[0]

@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy import select
 
+from . import km
 from . import preferences as preferences_mod
 from .config import settings
 from .db import DataProduct, UnmatchedQuery, async_session
@@ -506,6 +507,37 @@ async def run_chat(
         yield sse_event("token", text=reply)
         yield sse_event("final", reply=reply, matched_products=[], thinking_steps=thinking_steps)
         return
+
+    # KM answering (items 3+5 of the agent wishlist, see km.py's module
+    # docstring) - a cheap, deterministic keyword pre-filter runs first,
+    # no LLM call. Only a real hit routes into this path; anything else
+    # falls straight through to the unchanged catalog-matching flow
+    # below. A KM-path failure (LLM unreachable, etc.) also falls
+    # through rather than erroring out, same fallback philosophy as
+    # everything else in this function.
+    km_doc_ids = km.find_relevant_docs(user_msg)
+    if km_doc_ids:
+        yield step(
+            f"📚 命中資料治理知識庫（{'、'.join(km_doc_ids)}），依政策文件回覆..."
+            if lang == "zh"
+            else f"📚 Matched the data governance knowledge base ({', '.join(km_doc_ids)}), answering from policy docs..."
+        )
+        try:
+            km_reply = ""
+            async for piece in stream_chat_completion(
+                [{"role": "user", "content": km.build_km_prompt(user_msg, lang, km_doc_ids, history)}]
+            ):
+                km_reply += piece
+                yield sse_event("token", text=piece)
+            yield step("🏁 已依知識庫文件完成回覆。" if lang == "zh" else "🏁 Answered from the knowledge base.")
+            yield sse_event("final", reply=km_reply, matched_products=[], thinking_steps=thinking_steps)
+            return
+        except Exception as e:
+            yield step(
+                f"⚠️ 知識庫回覆失敗（{e}），改用一般資料主體比對流程。"
+                if lang == "zh"
+                else f"⚠️ KM answer failed ({e}), falling back to catalog matching."
+            )
 
     yield step("🧠 收到需求，開始進行 Reasoning 與任務拆解...")
     yield step("🔍 正在檢索資料目錄...")

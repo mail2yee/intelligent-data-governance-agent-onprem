@@ -69,10 +69,19 @@ things left off.
   on a small local model, see HANDOFF.md's "Greeting detection fix"
   section) in favor of offline, human-reviewed query mining
   (`backend/scripts/review_unmatched_queries.py`).
-- Backend: `ruff` + `mypy` clean, 143 pytest tests (`backend/tests/`) plus
+- Backend: `ruff` + `mypy` clean, 159 pytest tests (`backend/tests/`) plus
   a separate DeepEval-based LLM-judge eval suite (`backend/evals/`, not
   part of a bare `pytest` run - see `backend/README.md`'s "Evals"
   section). Frontend: `oxlint` clean, 58 vitest tests. All pass.
+- `chat.py`'s `run_chat()` also answers from a small fake KM (knowledge
+  base) of internal policy docs (`backend/app/km.py` -
+  `data-maturity-levels`, `approval-sla-policy`,
+  `data-access-request-faq`) before falling through to catalog matching
+  - a deterministic keyword pre-filter (no LLM classification step,
+  same discipline as greeting detection), weaker zero-hallucination
+  guarantee than the structured paths (no WrenAI governed-SQL
+  verification step for prose Q&A) - see HANDOFF.md's "KM answering"
+  section before touching this or adding new KM docs.
 - Personal chat preference memory (`backend/app/preferences.py`,
   2026-09-01) - a self-declared, non-authenticated `user_key` (typed
   into the top-bar profile dialog, `localStorage`-only) lets the LLM

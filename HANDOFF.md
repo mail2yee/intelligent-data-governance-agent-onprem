@@ -1639,6 +1639,97 @@ identity system:
   actually deletes it server-side (checked via a direct API call, not
   just the UI updating).
 
+## KM answering: items 3 + 5 of the agent wishlist (2026-09-01)
+
+The user asked for item 3 next ("3"). Before writing any code, confirmed
+via AskUserQuestion that item 3 ("answer based on KM with reasons and
+ask reasonable followup questions") and item 5 ("answer with content
+not given in the structured db", already scoped earlier but not built)
+needed to be built together - answering from a KM source *is* exactly
+what item 5 asked for, so building item 3 alone with no real KM source
+to answer from would mean nothing to actually answer with. Both
+recommended AskUserQuestion options were chosen: build them together,
+and fake the KM content as internal data-governance policy documents
+(the most natural fit for this app's own domain, and the option that
+best demonstrates "catalog can't answer this, but KM can").
+
+**What was built:**
+
+- **New module `backend/app/km.py`** - `KM_DOCS`: three fake internal
+  policy documents (data maturity-level classification / Gold-Silver-
+  Bronze criteria, the approval SLA policy, and the data-access-request
+  FAQ) - each with a title, full zh/en content, and a curated keyword
+  list. `find_relevant_docs()` is a **deterministic keyword pre-filter,
+  no LLM call** - same "don't add a new LLM-based classification step"
+  discipline already established for greeting detection (see that
+  section's history) and applied again here: only a real keyword hit
+  routes into the KM answer path at all, everything else falls straight
+  through to the existing, completely unchanged catalog-matching flow.
+  `build_km_prompt()` splices the matched doc(s) full text into a prompt
+  that explicitly instructs the LLM to: answer using only the provided
+  document content, say so plainly rather than guess if the docs don't
+  actually cover the question, briefly cite which document/policy the
+  answer comes from, and ask **at most one** genuinely relevant
+  follow-up question - not forced, never more than one.
+- **Deliberately NOT routed through WrenAI's governed SQL engine**
+  (unlike the catalog-matching and business-data paths) - that mechanism
+  validates *structured* queries against a live data source, which
+  doesn't fit prose Q&A over a handful of static documents. This means
+  the zero-hallucination guarantee here is honestly weaker than the
+  structured paths' - there's no separate structural verification step,
+  just the keyword pre-filter plus the prompt's explicit "say so if you
+  don't know" instruction. Worth being upfront about, same spirit as
+  this file's existing honesty about DeepEval's 0.50-1.00 pass rate -
+  not a new limitation this feature invented, an inherent tradeoff of
+  supporting unstructured content at all (exactly what item 5 asked
+  for).
+- `chat.py`'s `run_chat()`: a new branch right after the greeting
+  fast-path and before the existing catalog-matching flow - checks
+  `km.find_relevant_docs()`, and if it hits, streams the KM answer
+  (step/token/final events, same shape as everything else) and returns.
+  A KM-path failure (LLM unreachable, etc.) falls through to the normal
+  catalog-matching flow below rather than erroring the turn out - same
+  fallback philosophy as every other integration in this file. History
+  is threaded into the KM prompt too, so a reply to the KM answer's own
+  follow-up question gets interpreted in context - ties in naturally
+  with the existing multi-turn clarification loop (see that section
+  above): `DiscoverView.jsx`'s empty/unresolved-phase history carry-
+  forward already fires whenever `matched_products` is empty, which is
+  always true for a KM answer.
+- **Zero frontend changes needed** - `DiscoverView.jsx`/`CopilotDock.jsx`
+  already render arbitrary `reply` text plus `thinking_steps` generically
+  for any turn; a KM answer's step text ("📚 命中資料治理知識庫...")
+  and reply just flow through the exact same rendering path as a catalog
+  match or a not-found clarification. Confirmed this by actually loading
+  the app and asking a real policy question - no visual or behavioral
+  gap, no separate code path needed on the client.
+- Tests: `backend/tests/test_km.py` (retrieval matching - single doc,
+  multi-doc, case-insensitivity, no-match; prompt building - correct
+  language's content only, history block, multi-doc splicing) and new
+  `run_chat()` cases in `test_chat.py` (a KM hit answers without ever
+  calling the catalog-matching LLM prompts; a non-hit falls through
+  unchanged; a KM-path failure gracefully falls through to catalog
+  matching; history reaches the KM prompt). 159 pytest total (frontend
+  untouched, still 58 vitest), `ruff`/`mypy`/`oxlint` all clean.
+- **Verified live, not just via tests**: rebuilt and ran the actual
+  local stack against a real local Ollama. Asked real policy questions
+  and confirmed, for real LLM output: a single-doc match (Gold vs.
+  Silver) answered correctly, cited "《資料成熟度分級標準》" by name, and
+  ended with exactly one relevant follow-up; a multi-doc match ("how do
+  I request data, and how soon after approval do I get connection
+  info?") correctly synthesized information from *both* matched
+  documents (the FAQ and the SLA policy) into one coherent answer,
+  citing both; and - the important honesty check - a question the docs
+  don't actually cover ("which vendor can certify Gold-level data?")
+  got a reply that explicitly said the documents don't mention this,
+  rather than guessing, plus a reasonable suggestion to contact the
+  internal data governance team. A normal catalog question in the same
+  session correctly bypassed the KM path entirely (no KM step emitted,
+  normal catalog-matching steps only). Then confirmed the same Bronze-
+  level question through the actual browser UI (Discover page, AI mode)
+  end-to-end - correct answer, source citation, and a follow-up
+  question, rendered with no frontend changes required.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type
