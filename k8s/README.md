@@ -87,13 +87,12 @@ the real, current state and the real bugs hit getting there.
   putting the literal IP directly in the URL sends no SNI at all and
   the TLS handshake fails with `SSL_ERROR_SYSCALL`, which looks
   identical to a real routing failure and cost real debugging time
-  here. `dgo-demo-ip` is deliberately left reserved (not released) until
-  DNS is confirmed repointed at the new address and the site's been
-  used for a while without issue - release it explicitly once that's
-  confirmed:
-  ```bash
-  gcloud compute addresses delete dgo-demo-ip --global
-  ```
+  here. `dgo-demo-ip` was kept reserved (not released) until DNS was
+  confirmed repointed at the new address and the site confirmed working
+  end-to-end through the real hostname (both `curl` and an actual
+  logged-in browser session) - once confirmed, released via
+  `gcloud compute addresses delete dgo-demo-ip --global`.
+  `dgo-demo-ip-2` (`34.102.255.78`) is the address actually in use now.
 
 ## The real routing story: classic Ingress is abandoned, this uses Gateway API
 
@@ -371,11 +370,9 @@ gcloud iap web add-iam-policy-binding \
 ```bash
 gcloud container clusters delete dgo-demo --zone=asia-east1-a
 # dgo-demo-ip-2 is the address actually in use as of 2026-09-02 (see
-# "What's actually running" above) - dgo-demo-ip is the original,
-# currently kept reserved as a fallback but no longer bound to
-# anything; delete whichever of these still exist for you.
+# "What's actually running" above) - the original dgo-demo-ip was
+# released the same day after the swap was confirmed working.
 gcloud compute addresses delete dgo-demo-ip-2 --global
-gcloud compute addresses delete dgo-demo-ip --global
 gcloud certificate-manager maps entries delete dgo-demo-cert-map-entry --map=dgo-demo-cert-map
 gcloud certificate-manager maps delete dgo-demo-cert-map
 gcloud certificate-manager certificates delete dgo-demo-gw-cert
