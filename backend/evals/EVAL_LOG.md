@@ -11,6 +11,61 @@ judge or trial config) - not every ad-hoc local run.
 
 ---
 
+## 2026-09-04
+
+- Config: `DGO_EVAL_TRIALS=1`, judge model `qwen2.5:latest` (local
+  Ollama, unchanged) - **app** model temporarily switched to Anthropic's
+  `claude-sonnet-5` (`LLM_BASE_URL=https://api.anthropic.com/v1`,
+  `LLM_SQL_MODEL` unset - Claude used for everything, including SQL
+  generation, no separate SQL-tuned model needed the way the local
+  Ollama setup uses one). Same credentials already confirmed working
+  for the GKE demo (`k8s/backend-secret.env`), reused here temporarily
+  in `backend/.env` (gitignored, not committed) purely to compare eval
+  scores against a real frontier model - **not a permanent change**,
+  reverted back to local Ollama immediately after this run.
+- Context: user asked whether item 4 (multi-turn clarification)'s
+  accuracy could improve, given its accuracy is entirely downstream of
+  `resolve_via_semantic_layer()`'s SQL-keyword-extraction reliability -
+  already-flagged as the single highest-leverage fix on the "not done
+  yet" list (point at a real LLM gateway). This run answers "does a
+  better model actually move the needle" without yet having office
+  network access to the company's real gateway.
+
+| Golden query | Claude (this run) | Local Ollama (2026-08-03/09-01) |
+|---|---|---|
+| `zh-capacity` | 1.00 | 0.67 |
+| `zh-demand-orders` | 1.00 | 1.00 |
+| `zh-move-forecast` | 1.00 | 0.67 |
+| `zh-out-of-catalog-salary` | 1.00 | 1.00 (0.00 on 2026-08-03) |
+| `en-capacity` | 0.67 | 1.00 |
+| `en-out-of-catalog-weather` | 0.00 | 0.00 |
+| **Average** | **0.78** | 0.72 |
+
+- **Reading**: modest overall improvement (0.72 → 0.78), driven by two
+  Traditional-Chinese in-catalog queries moving from 0.67 to a perfect
+  1.00 - consistent with the theory that SQL-keyword-extraction
+  reliability, not the clarification logic itself, is the real
+  bottleneck. **`en-capacity` dropped (1.00 → 0.67)** - with
+  `DGO_EVAL_TRIALS=1` this is a single sample per query, genuinely noisy,
+  not a claim that Claude is worse at English specifically; don't read
+  a single query's swing as signal without more trials.
+  `en-out-of-catalog-weather` stayed at 0.00 for the same already-
+  documented reason (2026-08-03/09-01 entries): `matched_products`
+  correctly stayed `[]` on every trial (governance held, confirmed by
+  reproducing the query directly against the Claude-backed app), but
+  `not_found_reply()`'s catalog-listing text still gets misread by the
+  `qwen2.5` judge as a spurious recommendation - a judge-side quirk,
+  reproduced identically regardless of which model powers the app under
+  test, still not fixed (same open suggestion since 2026-08-03: scope
+  `RecommendationPrecision` to `golden.in_catalog` queries only).
+- **Not done**: a real multi-trial run (`DGO_EVAL_TRIALS=3`+) to get a
+  less noisy signal - costs real Claude API usage and takes
+  meaningfully longer, deliberately deferred pending a decision on
+  whether that spend is worth it before real office-network gateway
+  access is available anyway.
+
+---
+
 ## 2026-09-01
 
 - Config: `DGO_EVAL_TRIALS=1` (same reason as 2026-08-03 - local Ollama
