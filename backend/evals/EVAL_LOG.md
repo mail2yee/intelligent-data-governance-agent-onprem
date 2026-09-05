@@ -11,6 +11,58 @@ judge or trial config) - not every ad-hoc local run.
 
 ---
 
+## 2026-09-05
+
+- Config: `DGO_EVAL_TRIALS=3` (up from 1), judge model `qwen2.5:latest`
+  (local Ollama, unchanged), app model `claude-sonnet-5` (same
+  temporary setup as 2026-09-04, `backend/.env` reverted to local
+  Ollama again immediately after this run - not a permanent change).
+- Context: 2026-09-04's single-trial comparison showed a promising
+  0.72→0.78 average improvement, but was explicitly flagged as noisy
+  (N=1). User asked to re-run with more trials specifically to check
+  whether that improvement was real or noise.
+
+| Golden query | Claude, 3 trials | Claude, 1 trial (09-04) | Local Ollama, 1 trial (09-01) |
+|---|---|---|---|
+| `zh-capacity` | 0.78 | 1.00 | 0.67 |
+| `zh-demand-orders` | 0.78 | 1.00 | 1.00 |
+| `zh-move-forecast` | 0.89 | 1.00 | 0.67 |
+| `zh-out-of-catalog-salary` | 1.00 | 1.00 | 1.00 |
+| `en-capacity` | 0.67 | 0.67 | 1.00 |
+| `en-out-of-catalog-weather` | 0.00 | 0.00 | 0.00 |
+| **Average** | **0.687** | 0.78 | 0.72 |
+
+- **Reading - the N=1 "improvement" mostly evaporated with more data**:
+  every query that scored a perfect 1.00 at N=1 (`zh-capacity`,
+  `zh-demand-orders`, `zh-move-forecast`) dropped to 0.78-0.89 at N=3 -
+  meaning at least one of the three repeated trials failed a metric
+  despite being the *exact same query* against the *same model*. That's
+  real, meaningful non-determinism in the underlying task (SQL-keyword
+  extraction and/or judge scoring), not just "small-sample luck" in one
+  direction - the honest conclusion is the opposite of what the N=1 run
+  suggested: **this single N=3 Claude run (0.687) is not clearly better
+  than the N=1 local Ollama baseline (0.72)** it was being compared
+  against. That said, this still isn't a fully fair comparison -  the
+  local Ollama side of the comparison has never been run at N=3+
+  either, so its own N=1 numbers could just as easily move around with
+  more trials. **Don't treat either single-digit-trial-count number as
+  a settled answer to "which model is better"** - a real answer needs
+  matched trial counts on both sides, which hasn't been done yet.
+- `en-out-of-catalog-weather` stayed exactly 0.00 across all 3 trials
+  this time (not just 1) - `matched_products` correctly `[]` every
+  time (governance genuinely never wavers), but the judge-quirk
+  (misreading `not_found_reply()`'s catalog listing as a spurious
+  recommendation) is apparently consistent enough to reproduce on
+  every single trial, not an occasional fluke - strengthens the case
+  for finally scoping `RecommendationPrecision` to
+  `golden.in_catalog` queries only (open since 2026-08-03, still not
+  done).
+- Cost/time note for future runs: 3 trials × 6 queries took ~8.5
+  minutes and real Claude API usage, vs. ~1-2 minutes for the N=1 runs -
+  worth factoring in before defaulting to higher trial counts casually.
+
+---
+
 ## 2026-09-04
 
 - Config: `DGO_EVAL_TRIALS=1`, judge model `qwen2.5:latest` (local
