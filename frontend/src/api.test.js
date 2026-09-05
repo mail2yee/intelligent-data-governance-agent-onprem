@@ -154,17 +154,24 @@ describe('streamChat', () => {
     )
   })
 
-  it('includes user_key in the request body when provided', async () => {
+  it('includes user_key and user_token in the request body when provided', async () => {
     global.fetch.mockResolvedValue(
       makeSSEResponse([{ type: 'final', reply: '', matched_products: [], thinking_steps: [] }])
     )
 
-    await streamChat('hi', 'en', 'ai', [], { userKey: 'tim@example.com' })
+    await streamChat('hi', 'en', 'ai', [], { userKey: 'tim@example.com', userToken: 'tim-token' })
 
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/chat',
       expect.objectContaining({
-        body: JSON.stringify({ message: 'hi', lang: 'en', mode: 'ai', history: [], user_key: 'tim@example.com' }),
+        body: JSON.stringify({
+          message: 'hi',
+          lang: 'en',
+          mode: 'ai',
+          history: [],
+          user_key: 'tim@example.com',
+          user_token: 'tim-token',
+        }),
       })
     )
   })
@@ -178,32 +185,38 @@ describe('getPreferences / clearPreferences', () => {
     vi.restoreAllMocks()
   })
 
-  it('getPreferences fetches the user-keyed list', async () => {
+  it('getPreferences fetches the user-keyed list and sends the ownership token', async () => {
     global.fetch.mockResolvedValue({
       ok: true,
       json: async () => ({ preferences: ['usually asks about capacity data'] }),
     })
 
-    const body = await getPreferences('tim@example.com')
-
-    expect(global.fetch).toHaveBeenCalledWith('/api/preferences/tim%40example.com', expect.anything())
-    expect(body.preferences).toEqual(['usually asks about capacity data'])
-  })
-
-  it('clearPreferences sends a DELETE request', async () => {
-    global.fetch.mockResolvedValue({ ok: true, json: async () => ({ status: 'success' }) })
-
-    await clearPreferences('tim@example.com')
+    const body = await getPreferences('tim@example.com', 'tim-token')
 
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/preferences/tim%40example.com',
-      expect.objectContaining({ method: 'DELETE' })
+      expect.objectContaining({ headers: expect.objectContaining({ 'X-User-Token': 'tim-token' }) })
+    )
+    expect(body.preferences).toEqual(['usually asks about capacity data'])
+  })
+
+  it('clearPreferences sends a DELETE request with the ownership token', async () => {
+    global.fetch.mockResolvedValue({ ok: true, json: async () => ({ status: 'success' }) })
+
+    await clearPreferences('tim@example.com', 'tim-token')
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/preferences/tim%40example.com',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: expect.objectContaining({ 'X-User-Token': 'tim-token' }),
+      })
     )
   })
 
   it('throws on a non-ok response', async () => {
     global.fetch.mockResolvedValue({ ok: false, status: 500 })
-    await expect(getPreferences('tim@example.com')).rejects.toThrow('HTTP 500')
+    await expect(getPreferences('tim@example.com', 'tim-token')).rejects.toThrow('HTTP 500')
   })
 })
 

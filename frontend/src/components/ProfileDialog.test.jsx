@@ -32,11 +32,12 @@ describe('ProfileDialog', () => {
         t={makeT('en')}
         open={true}
         userKey="tim@example.com"
+        userToken="tim-token"
         onSave={() => {}}
         onClose={() => {}}
       />
     )
-    await waitFor(() => expect(api.getPreferences).toHaveBeenCalledWith('tim@example.com'))
+    await waitFor(() => expect(api.getPreferences).toHaveBeenCalledWith('tim@example.com', 'tim-token'))
     expect(await screen.findByText('usually asks about capacity data')).toBeInTheDocument()
   })
 
@@ -59,6 +60,7 @@ describe('ProfileDialog', () => {
         t={makeT('en')}
         open={true}
         userKey="tim@example.com"
+        userToken="tim-token"
         onSave={() => {}}
         onClose={() => {}}
       />
@@ -67,7 +69,7 @@ describe('ProfileDialog', () => {
     await screen.findByText('usually asks about capacity data')
     await userEvent.click(screen.getByText('Clear remembered preferences'))
 
-    expect(api.clearPreferences).toHaveBeenCalledWith('tim@example.com')
+    expect(api.clearPreferences).toHaveBeenCalledWith('tim@example.com', 'tim-token')
     await waitFor(() => expect(screen.queryByText('usually asks about capacity data')).not.toBeInTheDocument())
     expect(screen.getByText(/Nothing remembered yet/)).toBeInTheDocument()
   })

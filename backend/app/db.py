@@ -114,16 +114,43 @@ class UnmatchedQuery(Base):
     reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class UserIdentity(Base):
+    """Trust-on-first-use binding between a self-declared `user_key`
+    (a name/email, typed into the frontend's profile dialog) and a
+    random token minted client-side and stored in that browser's
+    localStorage (see identity.py's module docstring for the full
+    rationale and threat model this does/doesn't cover).
+
+    Added 2026-09-05 in response to a security review that found
+    `user_key` had NO ownership check at all - anyone could read/wipe
+    another person's preferences, or (via the same self-declared field
+    on ticket approvals) submit an approval decision as any owner just
+    by knowing their email, since `submit_approval()` never verified
+    the caller actually was that owner. This does not add real identity
+    (there is still no SSO/OIDC - see main.py's submit_approval
+    docstring) - it adds the ability to *distinguish* individuals from
+    each other: whoever registered a `user_key` first is the only one
+    who can act as it again, closing the "just guess/read someone's
+    email and act as them" class of attack, at the cost of still being
+    fully self-declared (a determined insider who obtains someone's
+    token, or who claims a name nobody's claimed yet, isn't stopped).
+    Real per-user auth requires the company's SSO/OIDC, deferred until
+    that's available.
+    """
+
+    __tablename__ = "user_identities"
+
+    user_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+
 class UserPreference(Base):
     """Preferences extracted from a user's own past chat turns (see
-    preferences.py) - keyed by a lightweight, self-declared `user_key`
-    (a name/email typed into the frontend's profile dialog, stored in
-    the browser's localStorage), not a real authenticated identity.
-    There is no SSO/OIDC in this app yet (see main.py's submit_approval
-    docstring for the same underlying gap) - anyone can claim any
-    user_key. Acceptable for what this is: a personalization nicety, not
-    a security boundary, and the user can view/clear their own list at
-    any time (see the /api/preferences endpoints).
+    preferences.py) - keyed by the same `user_key` as `UserIdentity`
+    above, which is what now actually gates read/write access to this
+    table (see the /api/preferences endpoints) - this model itself
+    stores content, not identity.
     """
 
     __tablename__ = "user_preferences"

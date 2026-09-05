@@ -58,18 +58,22 @@ export async function createTicket({ products, objective, purpose }) {
 }
 
 // See ProfileDialog.jsx - lets a user see and clear exactly what's been
-// remembered about them (backend/app/preferences.py), keyed by the same
-// self-declared, non-authenticated userKey streamChat() sends.
-export async function getPreferences(userKey) {
-  const res = await fetch(`/api/preferences/${encodeURIComponent(userKey)}`, { headers: authHeaders() })
+// remembered about them (backend/app/preferences.py), keyed by userKey.
+// `userToken` (2026-09-05) proves ownership of userKey via the backend's
+// trust-on-first-use identity.py - required, a security review found
+// these endpoints previously had no ownership check at all.
+export async function getPreferences(userKey, userToken) {
+  const res = await fetch(`/api/preferences/${encodeURIComponent(userKey)}`, {
+    headers: authHeaders({ 'X-User-Token': userToken || '' }),
+  })
   if (!res.ok) throw new Error('HTTP ' + res.status)
   return res.json()
 }
 
-export async function clearPreferences(userKey) {
+export async function clearPreferences(userKey, userToken) {
   const res = await fetch(`/api/preferences/${encodeURIComponent(userKey)}`, {
     method: 'DELETE',
-    headers: authHeaders(),
+    headers: authHeaders({ 'X-User-Token': userToken || '' }),
   })
   if (!res.ok) throw new Error('HTTP ' + res.status)
   return res.json()
@@ -81,14 +85,21 @@ export async function getTickets() {
   return res.json()
 }
 
-export async function submitApproval(ticketId, { owner_email, decision, reason }) {
+// `user_key`/`user_token` (2026-09-05) prove the caller actually is
+// `owner_email` via the backend's trust-on-first-use identity.py - a
+// security review found submit_approval() previously trusted
+// owner_email with no ownership check, letting anyone who merely read
+// a ticket's owner list (GET /api/tickets returns it to anyone) submit
+// a decision as any of them.
+export async function submitApproval(ticketId, { owner_email, decision, reason, user_key, user_token }) {
   const res = await fetch(`/api/tickets/${encodeURIComponent(ticketId)}/approvals`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ owner_email, decision, reason }),
+    body: JSON.stringify({ owner_email, decision, reason, user_key, user_token }),
   })
-  if (!res.ok) throw new Error('HTTP ' + res.status)
-  return res.json()
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(body.detail || 'HTTP ' + res.status)
+  return body
 }
 
 // Reads the /api/chat SSE stream and dispatches step / token / final /
@@ -111,13 +122,15 @@ export async function submitApproval(ticketId, { owner_email, decision, reason }
 // remembers/recalls preferences extracted from this user's own past
 // turns (see backend/app/preferences.py). Omitted from the request body
 // entirely when not set, so the body shape is unchanged for callers that
-// never pass it.
+// never pass it. `userToken` (2026-09-05) must go along with it - the
+// backend now requires proof of userKey ownership (identity.py) before
+// trusting it for preference read/write.
 export async function streamChat(
   message,
   lang,
   mode,
   history,
-  { userKey, onStep, onToken, onFinal, onError } = {}
+  { userKey, userToken, onStep, onToken, onFinal, onError } = {}
 ) {
   try {
     const res = await fetch('/api/chat', {
@@ -128,7 +141,7 @@ export async function streamChat(
         lang,
         mode,
         history: history || [],
-        ...(userKey ? { user_key: userKey } : {}),
+        ...(userKey ? { user_key: userKey, user_token: userToken } : {}),
       }),
     })
     if (!res.ok || !res.body) throw new Error('HTTP ' + res.status)

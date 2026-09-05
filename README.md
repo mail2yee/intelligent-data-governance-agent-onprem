@@ -16,7 +16,7 @@ Camunda), and what business logic / UI direction to carry over.
 
 **重要修正（2026-07-29）：Camunda 公司實際用的是 7.22 版**，不是原本以為的 Camunda 8（Zeebe/gRPC）——是完全不同的產品（REST API，沒有 gRPC/job worker 模型）。`camunda_client.py` 已經整個重寫並拿真實的本機 `camunda/camunda-bpm-platform:7.22.0` container 實測驗證過。
 
-**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **159** 個 pytest、前端 58 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
+**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **171** 個 pytest、前端 61 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
 
 **2026-08-05 架構調整：Camunda、DataHub、Postgres 現在都是「預設自架 image，image 抓不到就退回 config 裡設定的公司真實服務」**（Postgres 除外，一律自架，沒有退回機制）。DataHub 從原本跟 sibling repo 共用的獨立 `datahub docker quickstart` stack，改成直接併進這個 repo 自己的 `docker-compose.yml`（`datahub/docker-compose.datahub.yml`，7 個 container：GMS、前端、MySQL、Kafka、OpenSearch、Actions、一次性 init job）。新增 **`./deploy.sh`** 作為一鍵部署入口——會依序嘗試 pull 每個 image，抓得到就自架、抓不到就跳過並讓 app 退回用 `backend/.env` 裡已經設定的公司端點。全部 9 個 image（backend、frontend、camunda、mariadb、加上 DataHub 的 7 個）都走 `ghcr.io/mail2yee/...`，公司防火牆已確認連得到。細節見 `HANDOFF.md`「Self-hosted images with a config fallback」。
 
@@ -33,6 +33,8 @@ Camunda), and what business logic / UI direction to carry over.
 **2026-09-01：新增「記住個人對話偏好」功能。** 這是使用者原本 5 項 agent 願望清單的第 1 項。因為系統目前沒有真的登入機制，先跟使用者確認過兩個範圍決策：身分用輕量、非驗證的 `user_key`（在右上角新的「你的稱呼」對話框裡設定，只存在瀏覽器 localStorage）；「記住偏好」指的是萃取成具體的偏好描述（例如「常問產能相關資料」），不是存整段逐字對話紀錄。這份偏好清單會被塞進之後的 prompt 當背景資訊，明確規定只能用來輔助解讀模糊問題，不能當作推薦目錄以外資料的理由。實測時抓到一個真的 bug：偏好萃取一開始沿用了 SQL 專用模型（`llama3-groq-tool-use:8b`），結果那個模型在這個任務上穩定回傳格式錯誤的 JSON，改用預設的對話模型後才正常——這個問題是靠真的跑過本機 Ollama 才發現的，不是看程式碼看出來的。整個流程（真的讓 LLM 從對話中萃取偏好、存起來、下次模糊提問時真的影響回覆內容、瀏覽器上設定/清除偏好）都跑過真實環境驗證，細節見 `HANDOFF.md`「Personal chat preference memory」。
 
 **2026-09-01：新增「依知識庫（KM）回答並附理由、主動追問」功能。** 這是願望清單第 3 項，跟第 5 項（回答結構化資料庫以外的內容）密切相關，先跟使用者確認過後兩項一起做——要回答 KM 內容本來就需要真的有一個 KM 來源，等於也把第 5 項做掉了。新增 `backend/app/km.py`，模擬三份公司內部資料治理政策文件（資料成熟度分級標準、簽核 SLA 政策、資料存取申請 FAQ）。用一個不經過 LLM、純關鍵字比對的前置判斷（跟打招呼判斷同一套原則：不新增一個小模型不可靠的分類步驟）決定要不要走 KM 回答路徑，命中才會把文件全文餵給 LLM，明確要求「只能根據提供的文件回答、文件沒提到就老實說不知道、簡短說明理由來源、最多問一個真的合理的追問」。這條路徑刻意沒有經過 WrenAI 的 governed SQL 引擎驗證（那是為結構化查詢設計的，不適合純文字文件問答），所以零幻覺保證比目錄比對那條路弱一些，這點在文件裡有老實寫清楚。前端完全不用改，因為 DiscoverView/CopilotDock 本來就會把任何 reply 文字跟 thinking_steps 原樣渲染出來。實測跑過本機 Ollama：單一文件命中（Gold vs Silver）正確回答並附文件來源＋一個合理追問；跨文件命中（申請流程＋SLA）正確整合兩份文件的內容；文件沒提到的問題（例如「Gold 資料要找哪家廠商認證」）誠實回答文件沒寫、不瞎猜；一般目錄問題完全不會誤觸 KM 路徑。細節見 `HANDOFF.md`「KM answering」。
+
+**2026-09-05：資安總體檢＋核准流程身分驗證的過渡修法。** 全部功能都做完後，跑了一次完整的架構/資安檢視（不是重複看 HANDOFF.md 已經寫過的，是真的重新檢查目前的程式碼，包含這幾天新加的 business_data.py／preferences.py／km.py，這些都還沒做過資安檢視）。抓到兩個真的能打穿的洞：`submit_approval()` 完全信任 request body 裡自報的 `owner_email`，沒有驗證呼叫者真的是那個人，加上 `GET /api/tickets` 又會把每張票的 owner 名單公開回傳給任何人，串起來就是「讀名單→依序冒充每個 owner 核准」；另外 `decision` 欄位完全沒驗證，打小寫 `"reject"` 會被誤判成核准（因為程式只精確比對字串 `"Reject"`）。跟使用者確認過，公司之後會接真的 SSO，這次只需要「能分出個人」，不用做到真的身分驗證，所以做了一個 trust-on-first-use（TOFU）機制（`backend/app/identity.py`）：瀏覽器產生一組隨機 token，第一個用某個名字/email 的人會綁定這組 token，之後任何人想用同一個名字都必須拿出一樣的 token，否則拒絕——不是真的驗證身分，但至少不能單靠「知道/猜到某人的 email」就冒充對方。同一套機制也順便補上 `/api/preferences` 原本完全沒有的擁有權檢查。核准清單的 UI 也跟著改：現在核准／拒絕按鈕只會出現在符合你自己設定身分的那一列，不會再讓任何打開頁面的人對著別人的簽核列按按鈕。整個攻擊鏈（建票→讀名單→冒充攻擊）都實測過確認擋下來了，也實測過正常流程（設定身分、核准自己那列）在瀏覽器上還是正常運作。細節見 `HANDOFF.md`「Security review + interim identity fix」。
 
 **架構：** `docker-compose.yml` + 兩個可選的 overlay 檔案（`docker-compose.camunda.yml`、`datahub/docker-compose.datahub.yml`）——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 讀寫 `mariadb`（:3307，本機自架，無退回機制），也打 `camunda`（本機自架 REST API，:8082，抓不到 image 就退回 config）、DataHub（本機自架 GMS，:18080，同樣抓不到就退回 config），對外打一個內網服務：LLM gateway。完整圖見下面「Architecture」章節。
 
@@ -221,6 +223,27 @@ pytest backend/evals/ -v -s
   question the docs don't cover got an honest "not covered" answer
   instead of a guess, and a normal catalog question correctly bypassed
   the KM path entirely — see HANDOFF.md "KM answering".
+- **Security review + interim identity fix** (2026-09-05) — a full
+  architecture/security pass (re-checking actual current code, not
+  reciting prior findings) found two real P0 gaps: `submit_approval()`
+  trusted a self-reported `owner_email` with zero ownership check
+  (combined with `GET /api/tickets` exposing owner lists to anyone,
+  a full "read the list, impersonate each owner" exploit chain), and
+  `decision` was never validated (a lowercase `"reject"` silently
+  became an approval). Fixed with a trust-on-first-use `user_key`/
+  `user_token` scheme (`backend/app/identity.py`) — not real
+  authentication (still no company SSO/OIDC), but the first request to
+  claim a given identity is the only one who can act as it again,
+  confirmed with the user this meets the actual bar needed for now
+  ("just needs to distinguish individuals"). Same mechanism closed a
+  companion gap in `/api/preferences` (previously no ownership check at
+  all). `TicketRow.jsx`'s Approve/Reject buttons now only render on the
+  row matching the viewer's own claimed identity. Verified live — the
+  exact exploit chain the review found is now blocked end-to-end
+  (reproduced via curl against the real running backend), and the
+  legitimate flow (claim an identity, approve your own row) still works
+  through the actual browser UI — see HANDOFF.md "Security review +
+  interim identity fix".
 - **All 9 images mirror from GHCR** (`backend`, `frontend`, `camunda`,
   `mariadb`, and DataHub's 7) — confirmed the office network can reach
   `ghcr.io` even though it can't reach Docker Hub or the company's own

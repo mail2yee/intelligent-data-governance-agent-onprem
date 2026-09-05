@@ -54,10 +54,12 @@ class Settings(BaseSettings):
     # Added 2026-07-30 in response to a security review that flagged this
     # API having zero authentication at all. Deliberately scoped: this is
     # a coarse, single shared secret (blocks anonymous/external traffic),
-    # not per-user identity - it does NOT fix submit_approval()'s separate
-    # gap (nothing verifies the caller actually *is* the owner_email they
-    # claim to be in the request body). That needs real per-user auth
-    # (company SSO/OIDC) to close properly; this is an interim measure.
+    # not per-user identity. submit_approval()'s separate gap (nothing
+    # verified the caller actually *is* the owner_email they claim to be)
+    # got a partial, interim fix 2026-09-05 via identity.py's
+    # trust-on-first-use user_key/user_token - real per-user auth still
+    # needs the company's SSO/OIDC once available (see that module's
+    # docstring for exactly what TOFU does and doesn't cover).
     api_key: str = ""
 
     # WrenAI semantic layer project directory (see ../../wren/project and

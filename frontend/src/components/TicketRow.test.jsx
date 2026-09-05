@@ -27,7 +27,50 @@ describe('TicketRow', () => {
 
   it('calls onApprove with Approve when the approve button is clicked', async () => {
     const onApprove = vi.fn()
-    render(<TicketRow ticket={BASE_TICKET} t={makeT('en')} onApprove={onApprove} onShowCode={() => {}} />)
+    render(
+      <TicketRow
+        ticket={BASE_TICKET}
+        t={makeT('en')}
+        userKey="b@example.com"
+        onApprove={onApprove}
+        onShowCode={() => {}}
+      />
+    )
+    await userEvent.click(screen.getByText('Approve'))
+    expect(onApprove).toHaveBeenCalledWith('FAB-ABC123', 'b@example.com', 'Approve', '')
+  })
+
+  it('does not show action buttons for a row that does not match the viewer\'s claimed identity', () => {
+    render(
+      <TicketRow
+        ticket={BASE_TICKET}
+        t={makeT('en')}
+        userKey="someone-else@example.com"
+        onApprove={() => {}}
+        onShowCode={() => {}}
+      />
+    )
+    expect(screen.queryByText('Approve')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reject')).not.toBeInTheDocument()
+  })
+
+  it('does not show action buttons when no identity has been claimed at all', () => {
+    render(<TicketRow ticket={BASE_TICKET} t={makeT('en')} onApprove={() => {}} onShowCode={() => {}} />)
+    expect(screen.queryByText('Approve')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reject')).not.toBeInTheDocument()
+  })
+
+  it('matches the owner email case-insensitively', async () => {
+    const onApprove = vi.fn()
+    render(
+      <TicketRow
+        ticket={BASE_TICKET}
+        t={makeT('en')}
+        userKey="B@EXAMPLE.COM"
+        onApprove={onApprove}
+        onShowCode={() => {}}
+      />
+    )
     await userEvent.click(screen.getByText('Approve'))
     expect(onApprove).toHaveBeenCalledWith('FAB-ABC123', 'b@example.com', 'Approve', '')
   })
@@ -47,7 +90,15 @@ describe('TicketRow', () => {
     it('calls onApprove with Reject and the entered reason', async () => {
       promptSpy.mockReturnValue('not needed right now')
       const onApprove = vi.fn()
-      render(<TicketRow ticket={BASE_TICKET} t={makeT('en')} onApprove={onApprove} onShowCode={() => {}} />)
+      render(
+        <TicketRow
+          ticket={BASE_TICKET}
+          t={makeT('en')}
+          userKey="b@example.com"
+          onApprove={onApprove}
+          onShowCode={() => {}}
+        />
+      )
       await userEvent.click(screen.getByText('Reject'))
       expect(onApprove).toHaveBeenCalledWith('FAB-ABC123', 'b@example.com', 'Reject', 'not needed right now')
     })
@@ -55,7 +106,15 @@ describe('TicketRow', () => {
     it('does not call onApprove if no reason is entered', async () => {
       promptSpy.mockReturnValue('')
       const onApprove = vi.fn()
-      render(<TicketRow ticket={BASE_TICKET} t={makeT('en')} onApprove={onApprove} onShowCode={() => {}} />)
+      render(
+        <TicketRow
+          ticket={BASE_TICKET}
+          t={makeT('en')}
+          userKey="b@example.com"
+          onApprove={onApprove}
+          onShowCode={() => {}}
+        />
+      )
       await userEvent.click(screen.getByText('Reject'))
       expect(onApprove).not.toHaveBeenCalled()
       expect(alertSpy).toHaveBeenCalled()

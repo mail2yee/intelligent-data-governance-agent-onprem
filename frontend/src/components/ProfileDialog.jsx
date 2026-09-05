@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { clearPreferences, getPreferences } from '../api'
 
-export default function ProfileDialog({ t, open, userKey, onSave, onClose }) {
+export default function ProfileDialog({ t, open, userKey, userToken, onSave, onClose }) {
   const [name, setName] = useState(userKey || '')
   const [preferences, setPreferences] = useState([])
 
@@ -12,10 +12,10 @@ export default function ProfileDialog({ t, open, userKey, onSave, onClose }) {
       setPreferences([])
       return
     }
-    getPreferences(userKey)
+    getPreferences(userKey, userToken)
       .then((body) => setPreferences(body.preferences || []))
       .catch(() => setPreferences([]))
-  }, [open, userKey])
+  }, [open, userKey, userToken])
 
   if (!open) return null
 
@@ -25,7 +25,7 @@ export default function ProfileDialog({ t, open, userKey, onSave, onClose }) {
 
   async function clear() {
     if (!userKey) return
-    await clearPreferences(userKey).catch(() => {})
+    await clearPreferences(userKey, userToken).catch(() => {})
     setPreferences([])
   }
 

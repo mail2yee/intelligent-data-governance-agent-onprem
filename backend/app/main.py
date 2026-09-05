@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from . import preferences
+from . import identity, preferences
 from .chat import run_chat
 from .config import settings
 from .db import Approval, Ticket, async_session, init_db
@@ -144,10 +144,17 @@ async def chat(request: Request):
         for h in raw_history[-6:]
         if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content")
     ]
-    # Self-declared, not authenticated (see preferences.py's UserPreference
-    # docstring) - capped since this is client-controlled input, same
-    # caveat as `history` above.
+    # Self-declared, not real identity - capped since this is
+    # client-controlled input, same caveat as `history` above. Still
+    # required to prove ownership of `user_key` via `user_token` (see
+    # identity.py) before it's trusted for preference read/write - a
+    # security review found this previously had no check at all,
+    # letting a caller poison or read another person's remembered
+    # preferences just by naming them.
     user_key = str(payload.get("user_key") or "").strip()[:128] or None
+    user_token = str(payload.get("user_token") or "")
+    if user_key and not await identity.verify_or_claim(user_key, user_token):
+        raise HTTPException(status_code=403, detail="user_token does not match this user_key")
     user_preferences = await preferences.get_preferences(user_key) if user_key else None
     logger.info("Chat request: %r (lang=%s, mode=%s, history_len=%d)", user_msg, lang, mode, len(history))
     catalog = await datahub_client.get_catalog()
@@ -160,16 +167,22 @@ async def chat(request: Request):
 
 
 @api_router.get("/api/preferences/{user_key}")
-async def get_preferences(user_key: str):
+async def get_preferences(user_key: str, x_user_token: str = Header(default="")):
     """Lets a user see exactly what's been remembered about them (see
     preferences.py's module docstring on why this is a lightweight,
-    self-declared user_key rather than a real authenticated identity) -
-    transparency is the actual safeguard here, not access control."""
+    self-declared user_key rather than a real authenticated identity).
+    Gated on `X-User-Token` matching whoever first claimed this
+    user_key (see identity.py) - a security review found this
+    previously had no ownership check at all."""
+    if not await identity.verify_or_claim(user_key, x_user_token):
+        raise HTTPException(status_code=403, detail="user_token does not match this user_key")
     return {"preferences": await preferences.get_preferences(user_key)}
 
 
 @api_router.delete("/api/preferences/{user_key}")
-async def delete_preferences(user_key: str):
+async def delete_preferences(user_key: str, x_user_token: str = Header(default="")):
+    if not await identity.verify_or_claim(user_key, x_user_token):
+        raise HTTPException(status_code=403, detail="user_token does not match this user_key")
     await preferences.clear_preferences(user_key)
     return {"status": "success"}
 
@@ -253,10 +266,38 @@ async def list_tickets():
 
 @api_router.post("/api/tickets/{ticket_id}/approvals")
 async def submit_approval(ticket_id: str, request: Request):
+    """A security review (2026-09) found two real gaps here, both fixed
+    below: (1) `decision` was never validated - anything other than the
+    literal string "Reject" was treated as a completed, non-pending
+    decision, so e.g. "reject" (lowercase) or a typo silently became an
+    APPROVAL; (2) `owner_email` was trusted from the request body with
+    no proof the caller actually was that owner - anyone who read the
+    ticket's owner list (GET /api/tickets returns it to anyone) could
+    submit a decision as any of them. Fixed with identity.py's
+    trust-on-first-use `user_key`/`user_token` (same mechanism as
+    /api/preferences) - NOT real authentication (there is still no
+    company SSO/OIDC), but it does mean a caller must consistently
+    control the token bound to `owner_email` the first time it's ever
+    claimed, closing the "just know/guess an email" version of this
+    gap. Real per-user auth still requires real SSO/OIDC once available."""
     payload = await request.json()
     owner_email = payload["owner_email"]
     decision = payload["decision"]
     reason = payload.get("reason", "")
+    user_key = str(payload.get("user_key") or "")
+    user_token = str(payload.get("user_token") or "")
+
+    if decision not in ("Approve", "Reject"):
+        raise HTTPException(status_code=400, detail="decision must be 'Approve' or 'Reject'")
+
+    if not await identity.verify_or_claim(user_key, user_token):
+        raise HTTPException(status_code=403, detail="user_token does not match this user_key")
+    if user_key.lower() != owner_email.lower():
+        raise HTTPException(
+            status_code=403,
+            detail="you can only submit an approval decision as your own claimed identity",
+        )
+
     logger.info("Approval: ticket=%s owner=%s decision=%s", ticket_id, owner_email, decision)
 
     async with async_session() as session:

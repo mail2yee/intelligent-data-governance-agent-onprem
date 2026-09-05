@@ -56,11 +56,20 @@ things left off.
   `deploy.sh`.
 - Every `/api/*` route requires `X-API-Key` when `API_KEY` is set (empty
   = disabled, the default) - an interim, coarse auth gate added
-  2026-07-30 after a security review found none. Does **not** fix
-  `submit_approval()`'s separate owner-impersonation gap (needs real
-  SSO/OIDC). Frontend also had 3 real XSS sites (raw LLM/user text via
-  `dangerouslySetInnerHTML`) fixed the same session - see HANDOFF.md's
-  "Security review" section before touching auth or chat rendering.
+  2026-07-30 after a security review found none. Frontend also had 3
+  real XSS sites (raw LLM/user text via `dangerouslySetInnerHTML`)
+  fixed the same session - see HANDOFF.md's "Security review" section
+  before touching auth or chat rendering.
+- **`submit_approval()`'s owner-impersonation gap got an interim fix**
+  2026-09-05 (`backend/app/identity.py`) - a trust-on-first-use
+  `user_key`/`user_token` scheme, NOT real authentication (still no
+  SSO/OIDC), but it does mean nobody can act as, or read/wipe the
+  preferences of, a `user_key` someone else already claimed. Also fixed
+  the same session: `decision` on an approval is now validated against
+  `{"Approve", "Reject"}` (previously anything but the exact string
+  `"Reject"` silently became an approval). See HANDOFF.md's "Security
+  review + interim identity fix" section before touching approvals,
+  `/api/chat`'s `user_key`, or `/api/preferences`.
 - Discover search has a general/AI mode toggle (defaults to general -
   plain keyword `ILIKE` match, no LLM call) - see HANDOFF.md's "General
   search / AI search toggle" section.
@@ -69,10 +78,10 @@ things left off.
   on a small local model, see HANDOFF.md's "Greeting detection fix"
   section) in favor of offline, human-reviewed query mining
   (`backend/scripts/review_unmatched_queries.py`).
-- Backend: `ruff` + `mypy` clean, 159 pytest tests (`backend/tests/`) plus
+- Backend: `ruff` + `mypy` clean, 171 pytest tests (`backend/tests/`) plus
   a separate DeepEval-based LLM-judge eval suite (`backend/evals/`, not
   part of a bare `pytest` run - see `backend/README.md`'s "Evals"
-  section). Frontend: `oxlint` clean, 58 vitest tests. All pass.
+  section). Frontend: `oxlint` clean, 61 vitest tests. All pass.
 - `chat.py`'s `run_chat()` also answers from a small fake KM (knowledge
   base) of internal policy docs (`backend/app/km.py` -
   `data-maturity-levels`, `approval-sla-policy`,

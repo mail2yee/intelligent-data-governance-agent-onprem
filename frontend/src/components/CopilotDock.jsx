@@ -4,7 +4,7 @@ import ThinkingDots from './ThinkingDots'
 
 let msgSeq = 0
 
-export default function CopilotDock({ t, lang, userKey }) {
+export default function CopilotDock({ t, lang, userKey, userToken }) {
   const [open, setOpen] = useState(false)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
@@ -59,6 +59,7 @@ export default function CopilotDock({ t, lang, userKey }) {
     // applies to the Discover search box, not this chat panel).
     await streamChat(text, lang, 'ai', history, {
       userKey,
+      userToken,
       onStep: (stepText) => {
         setMessages((prev) =>
           prev.map((m) => (m.id === botId ? { ...m, kind: 'streaming', steps: [...m.steps, stepText] } : m))

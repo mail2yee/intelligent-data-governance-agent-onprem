@@ -20,6 +20,26 @@ import { makeT } from './i18n'
 // search-mode toggle.
 const USER_KEY_STORAGE = 'dgo_user_key'
 
+// A random per-browser token, generated once and kept forever (unlike
+// USER_KEY_STORAGE, this never changes even if the displayed name does)
+// - see backend/app/identity.py's module docstring. Trust-on-first-use:
+// the backend remembers whichever token first claimed a given user_key
+// and rejects any other token claiming the same one afterward, so this
+// is what actually proves "the same browser that set up this name is
+// the one asking again" for preferences and ticket approvals - not real
+// authentication, but enough to stop one person acting as another just
+// by knowing/guessing their name or email.
+const USER_TOKEN_STORAGE = 'dgo_user_token'
+
+function loadOrCreateUserToken() {
+  let token = localStorage.getItem(USER_TOKEN_STORAGE)
+  if (!token) {
+    token = crypto.randomUUID()
+    localStorage.setItem(USER_TOKEN_STORAGE, token)
+  }
+  return token
+}
+
 function App() {
   const [lang, setLang] = useState('zh')
   const [theme, setTheme] = useState('light')
@@ -31,6 +51,7 @@ function App() {
   const [codeProductId, setCodeProductId] = useState(null)
   const [toast, setToast] = useState({ message: '', visible: false })
   const [userKey, setUserKey] = useState(() => localStorage.getItem(USER_KEY_STORAGE) || '')
+  const [userToken] = useState(loadOrCreateUserToken)
   const [profileOpen, setProfileOpen] = useState(false)
   const toastTimer = useRef(null)
 
@@ -99,7 +120,13 @@ function App() {
   async function handleApprove(ticketId, email, decision, reason) {
     console.log('[DGO] submit-approval:', ticketId, email, decision)
     try {
-      await submitApproval(ticketId, { owner_email: email, decision, reason })
+      await submitApproval(ticketId, {
+        owner_email: email,
+        decision,
+        reason,
+        user_key: userKey,
+        user_token: userToken,
+      })
     } catch (e) {
       console.error('[DGO] submit-approval failed:', e)
       showToast(t('toastFailed'))
@@ -137,16 +164,23 @@ function App() {
             cart={cart}
             onToggleCart={toggleCart}
             userKey={userKey}
+            userToken={userToken}
           />
         )}
         {view === 'approvals' && (
-          <ApprovalsView t={t} tickets={tickets} onApprove={handleApprove} onShowCode={setCodeProductId} />
+          <ApprovalsView
+            t={t}
+            tickets={tickets}
+            userKey={userKey}
+            onApprove={handleApprove}
+            onShowCode={setCodeProductId}
+          />
         )}
       </main>
 
       <CartBar t={t} cart={cart} onReview={() => setSubmitOpen(true)} />
 
-      <CopilotDock t={t} lang={lang} userKey={userKey} />
+      <CopilotDock t={t} lang={lang} userKey={userKey} userToken={userToken} />
 
       <SubmitDialog
         t={t}
@@ -164,6 +198,7 @@ function App() {
         t={t}
         open={profileOpen}
         userKey={userKey}
+        userToken={userToken}
         onSave={saveUserKey}
         onClose={() => setProfileOpen(false)}
       />

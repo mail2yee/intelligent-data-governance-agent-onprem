@@ -5,6 +5,21 @@ async def _mock_catalog(monkeypatch, catalog):
     monkeypatch.setattr("app.main.datahub_client.get_catalog", _fake)
 
 
+def _approval_payload(owner_email, decision, reason=""):
+    # user_key/user_token: identity.py's trust-on-first-use gate now
+    # requires submit_approval's caller to prove ownership of
+    # owner_email - using owner_email itself as the user_key keeps
+    # these tests' existing "approve as this owner" shape intact, one
+    # deterministic fake token per owner is enough for TOFU to accept it.
+    return {
+        "owner_email": owner_email,
+        "decision": decision,
+        "reason": reason,
+        "user_key": owner_email,
+        "user_token": f"test-token-{owner_email}",
+    }
+
+
 async def _skip_camunda(monkeypatch):
     from app.integrations.camunda_client import ProcessStartResult
 
@@ -145,7 +160,9 @@ async def test_chat_endpoint_passes_user_key_and_fetched_preferences_to_run_chat
 
     monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
 
-    await client.post("/api/chat", json={"message": "hi", "user_key": "tim@example.com"})
+    await client.post(
+        "/api/chat", json={"message": "hi", "user_key": "tim@example.com", "user_token": "tim-token"}
+    )
     assert captured["user_key"] == "tim@example.com"
     assert captured["preferences"] == ["usually asks about capacity data"]
 
@@ -176,7 +193,10 @@ async def test_chat_endpoint_strips_and_caps_user_key(client, monkeypatch):
 
     monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
 
-    await client.post("/api/chat", json={"message": "hi", "user_key": "  padded@example.com  "})
+    await client.post(
+        "/api/chat",
+        json={"message": "hi", "user_key": "  padded@example.com  ", "user_token": "padded-token"},
+    )
     assert captured["user_key"] == "padded@example.com"
 
     await client.post("/api/chat", json={"message": "hi", "user_key": "   "})
@@ -187,13 +207,13 @@ async def test_get_preferences_returns_saved_list(client, monkeypatch):
     from app import preferences as preferences_mod
 
     await preferences_mod._save_preferences("tim@example.com", ["usually asks about capacity data"])
-    res = await client.get("/api/preferences/tim@example.com")
+    res = await client.get("/api/preferences/tim@example.com", headers={"X-User-Token": "tim-token"})
     assert res.status_code == 200
     assert res.json() == {"preferences": ["usually asks about capacity data"]}
 
 
 async def test_get_preferences_empty_for_unknown_user(client):
-    res = await client.get("/api/preferences/nobody@example.com")
+    res = await client.get("/api/preferences/nobody@example.com", headers={"X-User-Token": "nobody-token"})
     assert res.status_code == 200
     assert res.json() == {"preferences": []}
 
@@ -202,11 +222,11 @@ async def test_delete_preferences_clears_list(client, monkeypatch):
     from app import preferences as preferences_mod
 
     await preferences_mod._save_preferences("tim@example.com", ["usually asks about capacity data"])
-    res = await client.delete("/api/preferences/tim@example.com")
+    res = await client.delete("/api/preferences/tim@example.com", headers={"X-User-Token": "tim-token"})
     assert res.status_code == 200
     assert res.json() == {"status": "success"}
 
-    res = await client.get("/api/preferences/tim@example.com")
+    res = await client.get("/api/preferences/tim@example.com", headers={"X-User-Token": "tim-token"})
     assert res.json() == {"preferences": []}
 
 
@@ -331,7 +351,7 @@ async def test_ticket_stores_camunda_process_instance_id_and_completes_task_on_a
 
     await client.post(
         f"/api/tickets/{ticket_id}/approvals",
-        json={"owner_email": "a@example.com", "decision": "Approve", "reason": ""},
+        json=_approval_payload("a@example.com", "Approve"),
     )
 
     assert completed_with == {
@@ -352,7 +372,7 @@ async def test_approve_all_owners_moves_ticket_to_approved(client, monkeypatch):
     for owner in owners:
         res = await client.post(
             f"/api/tickets/{ticket_id}/approvals",
-            json={"owner_email": owner, "decision": "Approve", "reason": ""},
+            json=_approval_payload(owner, "Approve"),
         )
         assert res.status_code == 200
 
@@ -373,7 +393,7 @@ async def test_partial_approval_stays_pending(client, monkeypatch):
 
     await client.post(
         f"/api/tickets/{ticket_id}/approvals",
-        json={"owner_email": owners[0], "decision": "Approve", "reason": ""},
+        json=_approval_payload(owners[0], "Approve"),
     )
 
     ticket = (await client.get("/api/tickets")).json()[0]
@@ -390,7 +410,7 @@ async def test_reject_moves_ticket_to_rejected_even_if_others_still_pending(clie
 
     res = await client.post(
         f"/api/tickets/{ticket_id}/approvals",
-        json={"owner_email": owners[0], "decision": "Reject", "reason": "not needed"},
+        json=_approval_payload(owners[0], "Reject", "not needed"),
     )
     assert res.status_code == 200
 
@@ -402,7 +422,7 @@ async def test_reject_moves_ticket_to_rejected_even_if_others_still_pending(clie
 async def test_approval_on_unknown_ticket_returns_404(client):
     res = await client.post(
         "/api/tickets/FAB-DOESNOTEXIST/approvals",
-        json={"owner_email": "a@example.com", "decision": "Approve", "reason": ""},
+        json=_approval_payload("a@example.com", "Approve"),
     )
     assert res.status_code == 404
 
@@ -416,7 +436,7 @@ async def test_approval_from_non_owner_returns_404(client, monkeypatch):
 
     res = await client.post(
         f"/api/tickets/{ticket_id}/approvals",
-        json={"owner_email": "not-an-owner@example.com", "decision": "Approve", "reason": ""},
+        json=_approval_payload("not-an-owner@example.com", "Approve"),
     )
     assert res.status_code == 404
 
@@ -456,7 +476,7 @@ async def _approve_ticket_for(client, monkeypatch, product_id, owner="a@example.
     for o in owners:
         await client.post(
             f"/api/tickets/{ticket_id}/approvals",
-            json={"owner_email": o, "decision": "Approve", "reason": ""},
+            json=_approval_payload(o, "Approve"),
         )
     return ticket_id
 
@@ -513,6 +533,148 @@ async def test_query_returns_empty_rows_on_no_matching_data(client, monkeypatch)
     assert res.json()["rows"] == []
 
 
+# --- Identity/ownership enforcement (2026-09-05 security fixes) ------
+# See identity.py's module docstring: trust-on-first-use, not real
+# authentication, but it does mean once a user_key is claimed by one
+# token, a different token can never act as that user_key again.
+
+
+async def test_submit_approval_rejects_decision_not_in_allowed_set(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {"p1": {"id": "p1", "owner": "a@example.com"}})
+    await _skip_camunda(monkeypatch)
+    res = await client.post("/api/tickets", json={"products": ["p1"], "objective": "t", "purpose": "PoC"})
+    ticket_id = res.json()["ticket_id"]
+
+    # Lowercase "reject" previously fell through the `"Reject" in states`
+    # check and silently became a completed (non-pending) approval -
+    # exactly the "reject laundered into an approve" bug the review found.
+    res = await client.post(
+        f"/api/tickets/{ticket_id}/approvals",
+        json=_approval_payload("a@example.com", "reject"),
+    )
+    assert res.status_code == 400
+
+    ticket = (await client.get("/api/tickets")).json()[0]
+    assert ticket["status"] == "PENDING_APPROVAL"  # never touched
+
+
+async def test_submit_approval_rejects_mismatched_user_key(client, monkeypatch):
+    # user_key must equal owner_email - can't submit a decision "as"
+    # someone else even with a validly-claimed identity of your own.
+    await _mock_catalog(monkeypatch, {"p1": {"id": "p1", "owner": "a@example.com"}})
+    await _skip_camunda(monkeypatch)
+    res = await client.post("/api/tickets", json={"products": ["p1"], "objective": "t", "purpose": "PoC"})
+    ticket_id = res.json()["ticket_id"]
+
+    res = await client.post(
+        f"/api/tickets/{ticket_id}/approvals",
+        json={
+            "owner_email": "a@example.com",
+            "decision": "Approve",
+            "reason": "",
+            "user_key": "attacker@example.com",
+            "user_token": "attackers-own-token",
+        },
+    )
+    assert res.status_code == 403
+
+    ticket = (await client.get("/api/tickets")).json()[0]
+    assert ticket["status"] == "PENDING_APPROVAL"
+
+
+async def test_submit_approval_rejects_a_token_that_does_not_match_the_owners_claimed_token(client, monkeypatch):
+    # This is the exploit chain the security review found: create a
+    # ticket, read the owner list via GET /api/tickets (public), then
+    # try to approve as that owner. Once the real owner has claimed
+    # their user_key with their own token, a second caller presenting a
+    # different token for the same user_key must be rejected.
+    await _mock_catalog(monkeypatch, {"p1": {"id": "p1", "owner": "a@example.com"}})
+    await _skip_camunda(monkeypatch)
+    res = await client.post("/api/tickets", json={"products": ["p1"], "objective": "t", "purpose": "PoC"})
+    ticket_id = res.json()["ticket_id"]
+    owners = (await client.get("/api/tickets")).json()[0]["owners"]
+    assert "a@example.com" in owners  # confirms the owner list really is readable
+
+    # The real owner claims their identity first.
+    res = await client.post(
+        f"/api/tickets/{ticket_id}/approvals",
+        json=_approval_payload("a@example.com", "Approve"),
+    )
+    assert res.status_code == 200
+
+    # An "attacker" who only knows the email from the owner list above -
+    # not the real owner's token - tries to flip the decision.
+    res = await client.post(
+        f"/api/tickets/{ticket_id}/approvals",
+        json={
+            "owner_email": "a@example.com",
+            "decision": "Reject",
+            "reason": "attacker",
+            "user_key": "a@example.com",
+            "user_token": "a-guessed-or-different-token",
+        },
+    )
+    assert res.status_code == 403
+
+
+async def test_chat_endpoint_rejects_mismatched_token_for_claimed_user_key(client, monkeypatch):
+    await _mock_catalog(monkeypatch, {})
+
+    async def _fake_run_chat(user_msg, lang, catalog, mode, history=None, user_key=None, preferences=None):
+        yield 'data: {"type": "final", "reply": "ok", "matched_products": []}\n\n'
+
+    monkeypatch.setattr("app.main.run_chat", _fake_run_chat)
+
+    res = await client.post(
+        "/api/chat", json={"message": "hi", "user_key": "tim@example.com", "user_token": "tims-token"}
+    )
+    assert res.status_code == 200
+
+    res = await client.post(
+        "/api/chat", json={"message": "hi", "user_key": "tim@example.com", "user_token": "wrong-token"}
+    )
+    assert res.status_code == 403
+
+
+async def test_get_preferences_requires_matching_token(client, monkeypatch):
+    from app import preferences as preferences_mod
+
+    await preferences_mod._save_preferences("tim@example.com", ["usually asks about capacity data"])
+
+    # No token header at all - an empty token is never valid, even
+    # against a user_key nobody has claimed yet (TOFU only ever claims
+    # on a real, non-empty token).
+    res = await client.get("/api/preferences/tim@example.com")
+    assert res.status_code == 403
+
+    # First real, non-empty token establishes the claim.
+    res = await client.get("/api/preferences/tim@example.com", headers={"X-User-Token": "tims-real-token"})
+    assert res.status_code == 200
+
+    # A different token can no longer read it.
+    res = await client.get(
+        "/api/preferences/tim@example.com", headers={"X-User-Token": "not-tims-token"}
+    )
+    assert res.status_code == 403
+
+
+async def test_delete_preferences_requires_matching_token(client, monkeypatch):
+    from app import preferences as preferences_mod
+
+    await preferences_mod._save_preferences("tim@example.com", ["usually asks about capacity data"])
+    # Establish the real claim first, exactly as get_preferences_returns_saved_list does.
+    await client.get("/api/preferences/tim@example.com", headers={"X-User-Token": "tim-token"})
+
+    res = await client.delete(
+        "/api/preferences/tim@example.com", headers={"X-User-Token": "not-tims-token"}
+    )
+    assert res.status_code == 403
+
+    # Preference survives the rejected delete attempt.
+    res = await client.get("/api/preferences/tim@example.com", headers={"X-User-Token": "tim-token"})
+    assert res.json() == {"preferences": ["usually asks about capacity data"]}
+
+
 async def test_query_rejected_ticket_does_not_grant_access(client, monkeypatch):
     await _mock_catalog(
         monkeypatch, {"customer-capacity-allocation": {"id": "customer-capacity-allocation", "owner": "a@example.com"}}
@@ -526,7 +688,7 @@ async def test_query_rejected_ticket_does_not_grant_access(client, monkeypatch):
     owners = (await client.get("/api/tickets")).json()[0]["owners"]
     await client.post(
         f"/api/tickets/{ticket_id}/approvals",
-        json={"owner_email": owners[0], "decision": "Reject", "reason": "no"},
+        json=_approval_payload(owners[0], "Reject", "no"),
     )
 
     res = await client.post(

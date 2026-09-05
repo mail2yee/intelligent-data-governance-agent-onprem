@@ -42,13 +42,14 @@ function slaStats(tickets) {
   }
 }
 
-export default function ApprovalsView({ t, tickets, onApprove, onShowCode }) {
+export default function ApprovalsView({ t, tickets, userKey, onApprove, onShowCode }) {
   const stats = slaStats(tickets)
 
   return (
     <section className="view active">
       <h1>{t('navApprovals')}</h1>
       <p className="lead">{t('approvalsLead')}</p>
+      <p className="sub">{t('approvalsIdentityHint')}</p>
 
       <div className="sla-strip">
         <div className="sla-stat">
@@ -73,7 +74,14 @@ export default function ApprovalsView({ t, tickets, onApprove, onShowCode }) {
           <div className="empty-state">{t('noTickets')}</div>
         ) : (
           tickets.map((ticket) => (
-            <TicketRow key={ticket.id} ticket={ticket} t={t} onApprove={onApprove} onShowCode={onShowCode} />
+            <TicketRow
+              key={ticket.id}
+              ticket={ticket}
+              t={t}
+              userKey={userKey}
+              onApprove={onApprove}
+              onShowCode={onShowCode}
+            />
           ))
         )}
       </div>

@@ -1730,6 +1730,111 @@ best demonstrates "catalog can't answer this, but KM can").
   end-to-end - correct answer, source citation, and a follow-up
   question, rendered with no frontend changes required.
 
+## Security review + interim identity fix (2026-09-05)
+
+The user asked for a full architecture/security review after all the
+agent-capability features above landed. Ran a thorough pass (backend
+code + `k8s/` config) and got back a prioritized, evidence-based
+finding list - not a re-hash of what this file already documented, an
+actual re-check of current code, including the newer features
+(`business_data.py`, `preferences.py`, `km.py`) that had never had a
+security pass. Full findings aren't reproduced here (see the
+conversation/PR history if needed) - this section covers what was
+actually fixed and why, plus what's deliberately still open.
+
+**What was found, ranked:**
+- **P0**: `submit_approval()` trusted `owner_email` from the request
+  body with zero proof the caller actually was that owner - combined
+  with `GET /api/tickets` returning every ticket's owner list to
+  anyone, this meant *anyone* could read who needs to approve a ticket
+  and then submit decisions as each of them. Same class of gap already
+  flagged in this file's Security review section (2026-07-30), now with
+  a concrete exploit chain reaching real data (via the NL-to-SQL
+  `/query` endpoint once a ticket is "approved" this way).
+- **P0 (new)**: `decision` was never validated - anything other than
+  the literal string `"Reject"` was treated as a non-pending decision,
+  so `"reject"` (lowercase) or a typo silently became an APPROVAL.
+- **P1 (new)**: `/api/preferences/{user_key}` GET/DELETE had no
+  ownership check at all - anyone who knew/guessed a name or email
+  could read or wipe that person's LLM-extracted chat preferences.
+- Several other findings (WrenAI connection privilege level, no
+  row/column-level data policy on the business-data query path, error
+  message leakage, no rate limiting, unpinned `requirements.txt`) were
+  reviewed and **deliberately left open** - real issues, but lower
+  urgency or requiring a larger design decision than an interim fix
+  covers. Worth another pass before this goes anywhere more exposed
+  than the current demo/office-pilot scope.
+
+**Decision on the identity gaps**: confirmed with the user that real
+per-user authentication will eventually come from the company's own
+SSO/OIDC (not yet available) - for now, the ask was specifically "the
+mechanism just needs to be able to distinguish individuals" (使用者原話：
+「目前機制上能夠分出個人即可」), not full identity. Built accordingly:
+
+- **New `backend/app/identity.py`** - trust-on-first-use (TOFU) for the
+  same self-declared `user_key` pattern already used for preferences.
+  A random token, generated client-side (`crypto.randomUUID()`) and
+  stored in that browser's `localStorage`, gets bound to whichever
+  `user_key` first presents it; every later request claiming that same
+  `user_key` must present the same token or gets rejected (403). This
+  does **not** add real identity - a determined insider who claims a
+  name nobody's claimed yet still isn't stopped, and there's still no
+  proof a `user_key` is the real person's actual name/email. What it
+  does add: nobody can act as (or read/wipe the data of) a `user_key`
+  someone else already claimed, just by knowing or guessing it - the
+  exact gap the review found. New `UserIdentity` table (`db.py`),
+  handles a first-claim race via `IntegrityError` recovery rather than
+  erroring.
+- `submit_approval()`: now validates `decision ∈ {"Approve", "Reject"}`
+  (400 otherwise) and requires `user_key`/`user_token` in the body,
+  checked via `identity.verify_or_claim()`, **and** requires
+  `user_key.lower() == owner_email.lower()` - you can only submit a
+  decision as your own claimed identity, never as someone else's.
+- `/api/chat` and both `/api/preferences/{user_key}` endpoints: same
+  `verify_or_claim()` gate (body field for chat, `X-User-Token` header
+  for preferences) - a mismatched or missing token is a hard 403, not a
+  silent fallback to anonymous.
+- **Frontend**: `App.jsx` now generates/persists a per-browser
+  `userToken` (`dgo_user_token` in `localStorage`) alongside the
+  existing `userKey`, independent of it (survives a display-name
+  change, lost only if the browser's storage is cleared - an accepted
+  tradeoff for a personalization-tier feature, not something anyone
+  depends on for critical state). Threaded into every call that already
+  sent `userKey` (`streamChat`, `getPreferences`, `clearPreferences`,
+  `submitApproval`). **`TicketRow.jsx` no longer shows Approve/Reject
+  buttons on every pending row to every viewer** - only on the row
+  matching the viewer's own claimed `userKey` (case-insensitive email
+  match) - the backend enforces this regardless, but showing a button
+  that would just 403 is bad UX. A one-line hint in `ApprovalsView.jsx`
+  explains why buttons might be missing.
+- Tests: `backend/tests/test_identity.py` (first-claim succeeds,
+  matching token succeeds again, mismatched token rejected, empty
+  user_key/token rejected, two user_keys don't collide) and new
+  `test_tickets.py` cases reproducing the actual exploit chain end to
+  end (create ticket → read owner list → attempt the old no-identity
+  attack → 403; claim an identity → a different token can't hijack it
+  → 403; lowercase `"reject"` → 400, ticket untouched). Frontend:
+  `TicketRow.test.jsx` covers button visibility for matching/
+  non-matching/absent identity plus case-insensitivity. 171 pytest / 61
+  vitest, all green; `ruff`/`mypy`/`oxlint` clean.
+- **Verified live, not just via tests**: rebuilt and ran the actual
+  local stack. Reproduced the exact P0 exploit chain end-to-end against
+  the real running backend - created a ticket, read the owner list via
+  `curl`, confirmed the old-style "just know the email" attack now 403s,
+  confirmed a *second* token can't hijack an identity already claimed
+  by a *first* token (the actual protection this adds - a
+  never-before-claimed identity being claimed first by anyone, attacker
+  included, is the one TOFU limitation this doesn't solve, and is
+  documented as such rather than glossed over), and confirmed the
+  lowercase-`"reject"` laundering bug is closed. Confirmed the
+  preferences ownership fix the same way (stranger blocked with and
+  without a guessed token; real owner's real token works). Then drove
+  the whole thing through the actual browser: set a profile identity
+  matching one pending approver on a real ticket, confirmed Approve/
+  Reject buttons appeared **only** on that one row (not on the other
+  still-pending owner's row), and completed a real approval through the
+  UI end-to-end.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

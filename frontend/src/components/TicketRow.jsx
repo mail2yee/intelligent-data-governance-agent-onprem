@@ -12,7 +12,7 @@ function statusLabel(status, t) {
   return t('statusPending')
 }
 
-export default function TicketRow({ ticket, t, onApprove, onShowCode }) {
+export default function TicketRow({ ticket, t, userKey, onApprove, onShowCode }) {
   const [open, setOpen] = useState(false)
   const owners = ticket.owners || []
   const approvals = owners.map((email) => ({
@@ -79,7 +79,13 @@ export default function TicketRow({ ticket, t, onApprove, onShowCode }) {
                 </div>
               )}
             </div>
-            {a.decision === 'PENDING' && (
+            {/* Only the row matching the viewer's own claimed identity
+                gets action buttons - the backend enforces this too
+                (identity.py's trust-on-first-use user_key/user_token),
+                this is just not showing a button that would 403 anyway.
+                Case-insensitive since owner_email is a real email
+                address. */}
+            {a.decision === 'PENDING' && userKey && userKey.toLowerCase() === a.email.toLowerCase() && (
               <div className="actions">
                 <button
                   className="btn-mini approve"
