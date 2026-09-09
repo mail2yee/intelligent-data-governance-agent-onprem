@@ -8,9 +8,11 @@ from app.chat import (
     _extract_sql,
     _format_history,
     _format_preferences,
+    build_inventory_reply,
     build_prompt,
     build_sql_prompt,
     is_greeting,
+    is_inventory_question,
     keyword_search,
     local_rule_match,
     not_found_reply,
@@ -698,3 +700,99 @@ async def test_run_chat_km_prompt_includes_history(monkeypatch):
     assert len(seen_prompts) == 1
     assert "[Conversation so far]" in seen_prompts[0]
     assert "Gold requires a 95%+ quality score" in seen_prompts[0]
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "現在有多少 data subject?",
+        "目錄裡有幾個資料主體",
+        "多少個資料主體",
+        "列出所有資料主體",
+        "目錄裡有什麼",
+        "how many data subjects are there?",
+        "list all data subjects",
+        "What's in the catalog?",
+    ],
+)
+def test_is_inventory_question_true(msg):
+    assert is_inventory_question(msg) is True
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "我想分析特定客戶產能分配",
+        "what is gold maturity",
+        "",
+        "簽核 SLA 是多久",
+    ],
+)
+def test_is_inventory_question_false(msg):
+    assert is_inventory_question(msg) is False
+
+
+def test_build_inventory_reply_lists_every_product_zh():
+    ids, reply = build_inventory_reply(CATALOG, "zh")
+    assert ids == list(CATALOG.keys())
+    assert "共有 2 個資料主體" in reply
+    assert "Specific Customer Capacity Allocation" in reply
+    assert "FAB Production Move Forecast Summary" in reply
+
+
+def test_build_inventory_reply_lists_every_product_en():
+    ids, reply = build_inventory_reply(CATALOG, "en")
+    assert ids == list(CATALOG.keys())
+    assert "2 data subjects" in reply
+    assert "Specific Customer Capacity Allocation" in reply
+
+
+def test_build_inventory_reply_empty_catalog():
+    ids, reply_zh = build_inventory_reply({}, "zh")
+    assert ids == []
+    assert "空" in reply_zh
+    _, reply_en = build_inventory_reply({}, "en")
+    assert "empty" in reply_en.lower()
+
+
+async def test_keyword_search_answers_inventory_question_without_touching_db(monkeypatch):
+    async def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("keyword_search's inventory path should not sync/query the DB")
+
+    monkeypatch.setattr("app.chat.wrenai_client.sync_catalog", _should_not_be_called)
+
+    matched, reply = await keyword_search("目錄裡有幾個資料主體", "zh", CATALOG)
+    assert matched == list(CATALOG.keys())
+    assert "共有 2 個資料主體" in reply
+
+
+async def test_run_chat_inventory_question_never_calls_llm(monkeypatch):
+    async def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called for an inventory question")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _should_not_be_called)
+
+    events = await _collect_events(run_chat("how many data subjects are there?", "en", CATALOG))
+    final = events[-1]
+    assert final["type"] == "final"
+    assert final["matched_products"] == list(CATALOG.keys())
+    assert "2 data subjects" in final["reply"]
+    step_texts = [e["text"] for e in events if e["type"] == "step"]
+    assert any("catalog-overview" in t.lower() for t in step_texts)
+
+
+async def test_run_chat_inventory_question_does_not_trigger_zero_hallucination_warning(monkeypatch):
+    # The actual bug being fixed: this used to fall through to
+    # not_found_reply()'s "sorry, nothing matches" / zero-hallucination
+    # step even when the free-text reply already answered correctly.
+    async def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called for an inventory question")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("app.chat.stream_chat_completion", _should_not_be_called)
+
+    events = await _collect_events(run_chat("現在有多少 data subject?", "zh", CATALOG))
+    step_texts = [e["text"] for e in events if e["type"] == "step"]
+    assert not any("Zero Hallucination" in t for t in step_texts)
+    assert not any("無關" in t for t in step_texts)

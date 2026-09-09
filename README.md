@@ -16,7 +16,7 @@ Camunda), and what business logic / UI direction to carry over.
 
 **重要修正（2026-07-29）：Camunda 公司實際用的是 7.22 版**，不是原本以為的 Camunda 8（Zeebe/gRPC）——是完全不同的產品（REST API，沒有 gRPC/job worker 模型）。`camunda_client.py` 已經整個重寫並拿真實的本機 `camunda/camunda-bpm-platform:7.22.0` container 實測驗證過。
 
-**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **171** 個 pytest、前端 61 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
+**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **189** 個 pytest、前端 61 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
 
 **2026-08-05 架構調整：Camunda、DataHub、Postgres 現在都是「預設自架 image，image 抓不到就退回 config 裡設定的公司真實服務」**（Postgres 除外，一律自架，沒有退回機制）。DataHub 從原本跟 sibling repo 共用的獨立 `datahub docker quickstart` stack，改成直接併進這個 repo 自己的 `docker-compose.yml`（`datahub/docker-compose.datahub.yml`，7 個 container：GMS、前端、MySQL、Kafka、OpenSearch、Actions、一次性 init job）。新增 **`./deploy.sh`** 作為一鍵部署入口——會依序嘗試 pull 每個 image，抓得到就自架、抓不到就跳過並讓 app 退回用 `backend/.env` 裡已經設定的公司端點。全部 9 個 image（backend、frontend、camunda、mariadb、加上 DataHub 的 7 個）都走 `ghcr.io/mail2yee/...`，公司防火牆已確認連得到。細節見 `HANDOFF.md`「Self-hosted images with a config fallback」。
 
@@ -35,6 +35,8 @@ Camunda), and what business logic / UI direction to carry over.
 **2026-09-01：新增「依知識庫（KM）回答並附理由、主動追問」功能。** 這是願望清單第 3 項，跟第 5 項（回答結構化資料庫以外的內容）密切相關，先跟使用者確認過後兩項一起做——要回答 KM 內容本來就需要真的有一個 KM 來源，等於也把第 5 項做掉了。新增 `backend/app/km.py`，模擬三份公司內部資料治理政策文件（資料成熟度分級標準、簽核 SLA 政策、資料存取申請 FAQ）。用一個不經過 LLM、純關鍵字比對的前置判斷（跟打招呼判斷同一套原則：不新增一個小模型不可靠的分類步驟）決定要不要走 KM 回答路徑，命中才會把文件全文餵給 LLM，明確要求「只能根據提供的文件回答、文件沒提到就老實說不知道、簡短說明理由來源、最多問一個真的合理的追問」。這條路徑刻意沒有經過 WrenAI 的 governed SQL 引擎驗證（那是為結構化查詢設計的，不適合純文字文件問答），所以零幻覺保證比目錄比對那條路弱一些，這點在文件裡有老實寫清楚。前端完全不用改，因為 DiscoverView/CopilotDock 本來就會把任何 reply 文字跟 thinking_steps 原樣渲染出來。實測跑過本機 Ollama：單一文件命中（Gold vs Silver）正確回答並附文件來源＋一個合理追問；跨文件命中（申請流程＋SLA）正確整合兩份文件的內容；文件沒提到的問題（例如「Gold 資料要找哪家廠商認證」）誠實回答文件沒寫、不瞎猜；一般目錄問題完全不會誤觸 KM 路徑。細節見 `HANDOFF.md`「KM answering」。
 
 **2026-09-05：資安總體檢＋核准流程身分驗證的過渡修法。** 全部功能都做完後，跑了一次完整的架構/資安檢視（不是重複看 HANDOFF.md 已經寫過的，是真的重新檢查目前的程式碼，包含這幾天新加的 business_data.py／preferences.py／km.py，這些都還沒做過資安檢視）。抓到兩個真的能打穿的洞：`submit_approval()` 完全信任 request body 裡自報的 `owner_email`，沒有驗證呼叫者真的是那個人，加上 `GET /api/tickets` 又會把每張票的 owner 名單公開回傳給任何人，串起來就是「讀名單→依序冒充每個 owner 核准」；另外 `decision` 欄位完全沒驗證，打小寫 `"reject"` 會被誤判成核准（因為程式只精確比對字串 `"Reject"`）。跟使用者確認過，公司之後會接真的 SSO，這次只需要「能分出個人」，不用做到真的身分驗證，所以做了一個 trust-on-first-use（TOFU）機制（`backend/app/identity.py`）：瀏覽器產生一組隨機 token，第一個用某個名字/email 的人會綁定這組 token，之後任何人想用同一個名字都必須拿出一樣的 token，否則拒絕——不是真的驗證身分，但至少不能單靠「知道/猜到某人的 email」就冒充對方。同一套機制也順便補上 `/api/preferences` 原本完全沒有的擁有權檢查。核准清單的 UI 也跟著改：現在核准／拒絕按鈕只會出現在符合你自己設定身分的那一列，不會再讓任何打開頁面的人對著別人的簽核列按按鈕。整個攻擊鏈（建票→讀名單→冒充攻擊）都實測過確認擋下來了，也實測過正常流程（設定身分、核准自己那列）在瀏覽器上還是正常運作。細節見 `HANDOFF.md`「Security review + interim identity fix」。
+
+**2026-09-09：修好「現在有多少 data subject?」問不出答案的問題。** 使用者實際用的時候發現問「現在有多少 data subject?」會被系統判定成「跟目錄無關，已啟動 Zero Hallucination 攔截」——但其實 LLM 的文字回覆早就正確列出全部 3 個資料主體了，等於一個對的答案被包在一個看起來像拒絕的警告裡。先對著真的在跑的 backend 重現問題確認原因，不是用猜的：整套目錄比對機制是為了「幫我找出符合分析需求的資料主體」設計的，「有多少/列出全部」這種問目錄本身的 meta 問題沒有具體關鍵字可以搜尋，SQL 驗證那層永遠找不到東西，就會被判定成跟目錄無關。修法是在 `chat.py` 裡加第三種問題類型（跟 KM 回答並列，但更簡單）：一樣先用關鍵字判斷（不新增 LLM 分類步驟），命中後**完全不用打 LLM**——「有多少/列出全部」不需要推理，直接把記憶體裡已經有的 catalog dict 整理成回覆就好，比其他任何一條路徑的零幻覺保證都更強（沒有 LLM 參與，沒有東西可以幻覺）。一般搜尋跟 AI 搜尋兩種模式都共用同一套邏輯。實測：重現原本會出錯的問題，現在秒回、正確列出 3 個資料主體、沒有任何 Zero Hallucination 警告，瀏覽器上還會正常顯示資料卡片可以加入申請。細節見 `HANDOFF.md`「Catalog-inventory meta-questions」。
 
 **架構：** `docker-compose.yml` + 兩個可選的 overlay 檔案（`docker-compose.camunda.yml`、`datahub/docker-compose.datahub.yml`）——`frontend`（nginx 提供 React 靜態檔，:8090）呼叫 `backend`（FastAPI，:8000）的 REST/SSE API，`backend` 讀寫 `mariadb`（:3307，本機自架，無退回機制），也打 `camunda`（本機自架 REST API，:8082，抓不到 image 就退回 config）、DataHub（本機自架 GMS，:18080，同樣抓不到就退回 config），對外打一個內網服務：LLM gateway。完整圖見下面「Architecture」章節。
 
@@ -244,6 +246,19 @@ pytest backend/evals/ -v -s
   legitimate flow (claim an identity, approve your own row) still works
   through the actual browser UI — see HANDOFF.md "Security review +
   interim identity fix".
+- **Fixed a confirmed-live bug: "how many data subjects are there?"
+  used to get a "zero-hallucination blocked" warning** (2026-09-09)
+  even though the free-text reply already answered correctly - the
+  whole catalog-matching pipeline was built around "find a specific
+  match," with no path for meta-questions about the catalog's own
+  inventory. Added a third branch in `chat.py`
+  (`is_inventory_question()`/`build_inventory_reply()`) - a
+  deterministic keyword pre-filter routing into a reply that needs
+  **no LLM call at all** (a mechanical read of the catalog dict already
+  in memory), shared by both AI and keyword search modes. Verified live
+  — the original failing question now gets an instant, correct answer
+  with real product cards, through both direct API calls and the actual
+  browser UI — see HANDOFF.md "Catalog-inventory meta-questions".
 - **All 9 images mirror from GHCR** (`backend`, `frontend`, `camunda`,
   `mariadb`, and DataHub's 7) — confirmed the office network can reach
   `ghcr.io` even though it can't reach Docker Hub or the company's own

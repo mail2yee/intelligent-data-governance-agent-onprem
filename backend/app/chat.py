@@ -153,6 +153,83 @@ def not_found_reply(catalog: dict, lang: str) -> str:
         f"Currently available data subjects: {listed}. "
         f"Could you tell me more about which area your report is about, so I can recommend the best match?"
     )
+
+
+# Meta-questions about the catalog's own inventory ("how many data
+# subjects are there?", "list everything") used to fall into the same
+# bucket as a genuinely off-topic question: the SQL-verification step
+# (resolve_via_semantic_layer) has no keyword to search for a "how
+# many" question, so it always came back empty, forcing
+# not_found_reply()'s "sorry, nothing matches" response even though the
+# free-text reply (which gets the whole catalog dumped into its prompt)
+# often answered correctly anyway - a real, confirmed-live UX bug: a
+# right answer wrapped in a "this looks unrelated" warning.
+#
+# Fixed the same way KM answering (km.py) fixed a similar gap: a cheap,
+# deterministic keyword pre-filter (not a new LLM classification step -
+# same reasoning as is_greeting()'s docstring history) that routes into
+# a dedicated reply path. Unlike KM, this path needs no LLM at all -
+# "how many/what's in the catalog" has no reasoning to do, it's a
+# mechanical read of the catalog dict already in memory, so this is
+# actually a *stronger* zero-hallucination guarantee than any other
+# path here (nothing to hallucinate - there's no LLM in the loop).
+# Reused by both AI mode (run_chat) and keyword mode (keyword_search)
+# below, since it depends on nothing LLM-specific.
+_INVENTORY_MARKERS_ZH = (
+    "有多少",
+    "幾個",
+    "多少個",
+    "全部資料主體",
+    "所有資料主體",
+    "列出所有",
+    "列出全部",
+    "目錄裡有什麼",
+    "目錄有哪些",
+    "有哪些資料主體",
+)
+_INVENTORY_MARKERS_EN = (
+    "how many",
+    "list all",
+    "list every",
+    "what data subjects",
+    "all data subjects",
+    "what's in the catalog",
+    "what is in the catalog",
+)
+
+
+def is_inventory_question(user_msg: str) -> bool:
+    msg_lower = user_msg.lower()
+    return any(m in user_msg for m in _INVENTORY_MARKERS_ZH) or any(
+        m in msg_lower for m in _INVENTORY_MARKERS_EN
+    )
+
+
+def build_inventory_reply(catalog: dict, lang: str) -> tuple[list[str], str]:
+    ids = list(catalog.keys())
+    lines = [
+        f"- {item.get('name', pid)}"
+        + (f"（{item.get('maturity_level', '')}" if lang == "zh" else f" ({item.get('maturity_level', '')}")
+        + (
+            f"，{item.get('data_quality_score', '')}）"
+            if lang == "zh"
+            else f", {item.get('data_quality_score', '')})"
+        )
+        for pid, item in catalog.items()
+    ]
+    if lang == "zh":
+        header = f"目前資料目錄中共有 {len(ids)} 個資料主體：" if ids else "目前資料目錄是空的。"
+    else:
+        n = len(ids)
+        header = (
+            f"There are currently {n} data subject{'' if n == 1 else 's'} in the catalog:"
+            if ids
+            else "The catalog is currently empty."
+        )
+    reply = header + ("\n" + "\n".join(lines) if lines else "")
+    return ids, reply
+
+
 GREETING_REPLY = {
     # Plain text, not HTML - the frontend renders this (and every other
     # reply string here, including raw LLM output) as plain text, not
@@ -441,6 +518,9 @@ async def keyword_search(user_msg: str, lang: str, catalog: dict) -> tuple[list[
     ILIKE clauses ANDed together is the correct choice here, not a
     simplification.
     """
+    if is_inventory_question(user_msg):
+        return build_inventory_reply(catalog, lang)
+
     await wrenai_client.sync_catalog(catalog)
     keywords = [kw.strip() for kw in user_msg.split() if kw.strip()]
     if not keywords:
@@ -508,6 +588,28 @@ async def run_chat(
         yield sse_event("final", reply=reply, matched_products=[], thinking_steps=thinking_steps)
         return
 
+    # Catalog-inventory meta-questions ("how many data subjects are
+    # there?", "list everything") - see build_inventory_reply()'s
+    # comment for why this exists and why it's deterministic (no LLM
+    # call at all, not even KM answering's single call) - there's
+    # nothing to reason about, just a mechanical read of the catalog
+    # dict already in memory.
+    if is_inventory_question(user_msg):
+        yield step(
+            "📋 偵測到目錄總覽問題，直接列出所有資料主體..."
+            if lang == "zh"
+            else "📋 Detected a catalog-overview question, listing all data subjects..."
+        )
+        matched_ids, reply = build_inventory_reply(catalog, lang)
+        yield sse_event("token", text=reply)
+        yield step(
+            "🏁 已列出目前資料目錄的所有資料主體。"
+            if lang == "zh"
+            else "🏁 Listed everything currently in the catalog."
+        )
+        yield sse_event("final", reply=reply, matched_products=matched_ids, thinking_steps=thinking_steps)
+        return
+
     # KM answering (items 3+5 of the agent wishlist, see km.py's module
     # docstring) - a cheap, deterministic keyword pre-filter runs first,
     # no LLM call. Only a real hit routes into this path; anything else
@@ -529,7 +631,9 @@ async def run_chat(
             ):
                 km_reply += piece
                 yield sse_event("token", text=piece)
-            yield step("🏁 已依知識庫文件完成回覆。" if lang == "zh" else "🏁 Answered from the knowledge base.")
+            yield step(
+                "🏁 已依知識庫文件完成回覆。" if lang == "zh" else "🏁 Answered from the knowledge base."
+            )
             yield sse_event("final", reply=km_reply, matched_products=[], thinking_steps=thinking_steps)
             return
         except Exception as e:

@@ -1835,6 +1835,77 @@ mechanism just needs to be able to distinguish individuals" (使用者原話：
   still-pending owner's row), and completed a real approval through the
   UI end-to-end.
 
+## Catalog-inventory meta-questions (2026-09-09)
+
+User hit a real, confirmed-live bug while trying out the app: asking
+"現在有多少 data subject?" (how many data subjects are there?) got a
+reply that *looked* like a rejection - the reasoning steps showed
+"⚠️ 判定此需求與資料目錄無關，已啟動 Zero Hallucination 攔截" (judged
+unrelated to the catalog, zero-hallucination blocking triggered) -
+even though the free-text answer sitting right next to that warning
+correctly listed all 3 real catalog products by name. Reproduced
+directly against the running backend before touching any code to
+confirm the actual cause, not guess at it.
+
+**Root cause**: the whole catalog-matching pipeline is built around one
+shape of question - "find the specific data subject matching my
+analysis need." A meta-question about the catalog's own inventory
+("how many", "list everything") has no specific keyword to search for,
+so `resolve_via_semantic_layer()`'s SQL-verification step always comes
+back with zero rows, which forces `matched_products = []` and the
+"unrelated to catalog" warning - regardless of whether the free-text
+reply (which gets the whole catalog dumped into its own prompt) already
+answered correctly. A right answer wrapped in a warning that says it's
+wrong.
+
+**Fix**: a third question-type, alongside KM answering and catalog
+matching, added directly in `chat.py` (not a new module like `km.py` -
+this is tightly coupled to the `catalog` dict `chat.py` already owns,
+not new external content):
+
+- `is_inventory_question()` - a cheap, deterministic keyword pre-filter
+  (`有多少`/`幾個`/`list all`/`how many`/etc.), same "not a new LLM
+  classification step" discipline as greeting detection and KM
+  answering.
+- `build_inventory_reply()` - **needs no LLM call at all**, unlike KM
+  answering. "How many/what's in the catalog" has no reasoning to do,
+  it's a mechanical read of the `catalog` dict already in memory -
+  which makes this actually a *stronger* zero-hallucination guarantee
+  than any other path in the app (nothing to hallucinate - there's
+  literally no LLM in the loop for this one).
+- Reused by **both** AI mode (`run_chat()`) and keyword mode
+  (`keyword_search()`) - since it has zero LLM dependency, it doesn't
+  violate keyword mode's "never touches an LLM" invariant, so both
+  modes benefit for free from the same two functions.
+- `matched_products` is set to the **full list of catalog ids** for a
+  hit - this is a legitimate resolved match (not an unresolved/empty
+  turn), so the frontend renders real product cards and doesn't carry
+  history forward waiting for a follow-up that isn't coming.
+- Tests: `is_inventory_question()`/`build_inventory_reply()` unit tests
+  (zh/en markers, empty catalog, no false-positive on real analysis-need
+  queries), `keyword_search()`'s inventory path confirmed to never touch
+  the DB, `run_chat()`'s AI-mode path confirmed to never call the LLM
+  and confirmed to **not** emit the zero-hallucination warning (the
+  actual regression test for the bug that was found). 189 pytest, all
+  green (frontend untouched, no changes needed there - same as KM
+  answering, the existing generic reply/steps rendering already
+  handles it).
+- **Verified live**: rebuilt and reproduced the exact original question
+  against the running backend - instant reply (no LLM latency), all 3
+  real catalog names/maturity/quality listed correctly, `matched_products`
+  containing all 3 real ids, no zero-hallucination warning anywhere in
+  the steps. Confirmed English phrasing and keyword mode both work the
+  same way. Confirmed a real analysis-need query (unrelated to this fix)
+  still routes through the normal catalog-matching flow unchanged - the
+  one flaky empty-match hit while testing that path was the same
+  already-documented small-local-model SQL-generation non-determinism
+  (HANDOFF/EVAL_LOG's own long-standing finding), not a regression from
+  this change - confirmed by the thinking steps showing the normal
+  🧠🔍🧬 flow, not the new 📋 inventory step. Then drove the original
+  failing question through the actual browser UI end-to-end: instant
+  correct answer, real product cards rendered below it, addable to the
+  request cart like any other successful match.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

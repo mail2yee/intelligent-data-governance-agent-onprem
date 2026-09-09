@@ -78,7 +78,7 @@ things left off.
   on a small local model, see HANDOFF.md's "Greeting detection fix"
   section) in favor of offline, human-reviewed query mining
   (`backend/scripts/review_unmatched_queries.py`).
-- Backend: `ruff` + `mypy` clean, 171 pytest tests (`backend/tests/`) plus
+- Backend: `ruff` + `mypy` clean, 189 pytest tests (`backend/tests/`) plus
   a separate DeepEval-based LLM-judge eval suite (`backend/evals/`, not
   part of a bare `pytest` run - see `backend/README.md`'s "Evals"
   section). Frontend: `oxlint` clean, 61 vitest tests. All pass.
@@ -91,6 +91,16 @@ things left off.
   guarantee than the structured paths (no WrenAI governed-SQL
   verification step for prose Q&A) - see HANDOFF.md's "KM answering"
   section before touching this or adding new KM docs.
+- `chat.py` also has a third branch (`is_inventory_question()`/
+  `build_inventory_reply()`, 2026-09-09) for meta-questions about the
+  catalog's own inventory ("how many data subjects are there?", "list
+  everything") - fixes a confirmed-live bug where these fell through to
+  a "zero-hallucination blocked" warning even though the free-text
+  reply already answered correctly. Needs no LLM at all (mechanical
+  read of the `catalog` dict already in memory) - stronger
+  zero-hallucination guarantee than any other path here. Shared by both
+  AI mode and keyword mode. See HANDOFF.md's "Catalog-inventory
+  meta-questions" section.
 - Personal chat preference memory (`backend/app/preferences.py`,
   2026-09-01) - a self-declared, non-authenticated `user_key` (typed
   into the top-bar profile dialog, `localStorage`-only) lets the LLM
