@@ -317,6 +317,38 @@ pytest backend/evals/ -v -s
 
 ## Architecture
 
+FastAPI backend, MariaDB for the app's own data (tickets/approvals,
+chat history side-effects, TOFU identity), React + Vite frontend,
+served by nginx. Three real external integrations, each with a
+graceful mock fallback on failure rather than an error: Camunda 7.22
+(REST, `/engine-rest`) drives the actual multi-owner approval state
+machine; DataHub (GraphQL) is the catalog source of truth; an
+OpenAI-compatible LLM endpoint powers chat. WrenAI is not a network
+integration at all — it's a Python library embedded directly in the
+backend process, used as a governed-SQL layer so the LLM can never
+reference a table/column outside what's declared to it (the
+zero-hallucination guarantee this app is actually named for).
+
+**Two independent WrenAI projects**, not one — because a WrenAI
+project maps 1:1 to a physical DB connection, not a logical grouping:
+`wren/project` mirrors the catalog (`data_products` in MariaDB) purely
+so chat can verify a matched product is real; `wren/business_capacity_plan`
+points at a second, genuinely separate database (`fab-business-db`, a
+Postgres container simulating a real downstream business system) and
+is what actually answers governed natural-language queries against
+real business rows — gated by two independent server-side checks
+(`business_data.PRODUCT_DATA_SOURCES`'s registry of which products are
+even wired to real data, and an APPROVED ticket that covers the
+product), not by the LLM's own judgment.
+
+Camunda and DataHub can each be self-hosted locally via an optional
+compose overlay, or replaced with the company's real endpoint via
+config — see "Self-hosted images with a config fallback" and "Office
+mode" in `HANDOFF.md` for exactly when each path is taken; `--office`
+mode never attempts to self-host either one at all. MariaDB and
+`fab-business-db` have no such fallback — self-hosting them is the
+actual plan, not a dev convenience.
+
 ```mermaid
 flowchart LR
     U["Browser"]
@@ -324,43 +356,54 @@ flowchart LR
     subgraph compose["docker-compose.yml (always)"]
         FE["frontend\nReact + Vite, served by nginx\n:8090"]
         BE["backend\nFastAPI\n:8000"]
-        PG[("mariadb:11.4\n:3307\nno fallback - self-hosted always")]
+        PG[("mariadb:11.4\n:3307\napp data + catalog mirror\nno fallback - self-hosted always")]
+        FABDB[("fab-business-db\npostgres:16\n:5433\nfake real business data\nno fallback - self-hosted always")]
     end
 
-    subgraph camoverlay["docker-compose.camunda.yml\n(included if image pullable)"]
+    subgraph camoverlay["docker-compose.camunda.yml\n(local dev only, skipped entirely in --office mode)"]
         CAM["camunda\ncamunda-bpm-platform:7.22.0\nREST /engine-rest, :8082"]
     end
 
-    subgraph dhoverlay["datahub/docker-compose.datahub.yml\n(included if all 7 images pullable)"]
+    subgraph dhoverlay["datahub/docker-compose.datahub.yml\n(local dev only, skipped entirely in --office mode)"]
         DH["datahub-gms + 6 more\n(frontend, mysql, kafka,\nopensearch, actions, init job)\n:18080"]
     end
 
-    subgraph ext["Company network - config fallback\nwhen the overlay above is skipped"]
+    subgraph ext["Company network - config, always used in --office mode"]
         LLM["LLM gateway\nOpenAI-compatible (assumed,\nunconfirmed against real endpoint)"]
         CAMREAL["Company's real Camunda 7\n(CAMUNDA_BASE_URL)"]
         DHREAL["Company's real DataHub\n(DATAHUB_API_URL)"]
     end
 
-    WREN["WrenAI (wrenai package)\nembedded in backend process,\ngoverned SQL against data_products"]
+    WRENCAT["WrenAI project: catalog mirror\n(wren/project)\nverifies a matched product is real"]
+    WRENBIZ["WrenAI project: business data\n(wren/business_capacity_plan)\ngoverned NL-to-SQL, ticket-gated"]
 
     MOCK["Fallback: hardcoded mock catalog /\nlocal keyword chat match"]
 
     U -->|HTTP| FE
-    FE -->|"REST + SSE: /chat, /tickets"| BE
+    FE -->|"REST + SSE: /chat, /tickets, /identity"| BE
     BE --> PG
     BE -->|"chat completions, streamed"| LLM
     BE -->|"start process, complete owner task"| CAM
     BE -.->|"if camunda overlay skipped"| CAMREAL
     BE -->|"query catalog (GraphQL)"| DH
     BE -.->|"if datahub overlay skipped"| DHREAL
-    BE -->|"sync catalog + governed SQL"| WREN
-    WREN --> PG
+    BE -->|"sync catalog"| WRENCAT
+    WRENCAT --> PG
+    BE -->|"NL-to-SQL, only for\nAPPROVED + registered products"| WRENBIZ
+    WRENBIZ --> FABDB
     BE -. on any integration failure .-> MOCK
 ```
 
 Ticket/approval state machine and chat contract are documented in
 `HANDOFF.md` ("Business logic and data model to preserve") — this
 diagram is just the component/network shape, not the business logic.
+TOFU identity (`user_key`/`user_token`, `backend/app/identity.py`) is
+an app-level concern, not a separate component in this diagram — it
+lives entirely inside `mariadb` above, gating `/api/tickets/*/approvals`
+and `/api/preferences/*` at the FastAPI layer. See HANDOFF.md's
+"Security review + interim identity fix" and "Design review: two real
+approval-flow bugs" sections for what it does and doesn't protect
+against.
 
 ## Product flow
 
