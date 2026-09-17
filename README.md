@@ -16,7 +16,7 @@ Camunda), and what business logic / UI direction to carry over.
 
 **重要修正（2026-07-29）：Camunda 公司實際用的是 7.22 版**，不是原本以為的 Camunda 8（Zeebe/gRPC）——是完全不同的產品（REST API，沒有 gRPC/job worker 模型）。`camunda_client.py` 已經整個重寫並拿真實的本機 `camunda/camunda-bpm-platform:7.22.0` container 實測驗證過。
 
-**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **189** 個 pytest、前端 61 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
+**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **189** 個 pytest、前端 61 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。一般搜尋（關鍵字比對，非 AI 模式）也有自己的命中率 eval（不需要 LLM 判斷，因為關鍵字比對是完全確定性的），目前測出來命中率 0.75（6/8），細節見 HANDOFF.md。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
 
 **2026-08-05 架構調整：Camunda、DataHub、Postgres 現在都是「預設自架 image，image 抓不到就退回 config 裡設定的公司真實服務」**（Postgres 除外，一律自架，沒有退回機制）。DataHub 從原本跟 sibling repo 共用的獨立 `datahub docker quickstart` stack，改成直接併進這個 repo 自己的 `docker-compose.yml`（`datahub/docker-compose.datahub.yml`，7 個 container：GMS、前端、MySQL、Kafka、OpenSearch、Actions、一次性 init job）。新增 **`./deploy.sh`** 作為一鍵部署入口——會依序嘗試 pull 每個 image，抓得到就自架、抓不到就跳過並讓 app 退回用 `backend/.env` 裡已經設定的公司端點。全部 9 個 image（backend、frontend、camunda、mariadb、加上 DataHub 的 7 個）都走 `ghcr.io/mail2yee/...`，公司防火牆已確認連得到。細節見 `HANDOFF.md`「Self-hosted images with a config fallback」。
 
@@ -259,6 +259,19 @@ pytest backend/evals/ -v -s
   — the original failing question now gets an instant, correct answer
   with real product cards, through both direct API calls and the actual
   browser UI — see HANDOFF.md "Catalog-inventory meta-questions".
+- **Keyword search mode now has its own hit-rate eval** (2026-09-11) —
+  previously only AI mode's DeepEval suite measured accuracy; the
+  default "general search" toggle (plain `ILIKE` keyword matching, no
+  LLM) had zero visibility. New `backend/evals/test_keyword_search_eval.py`
+  needs no LLM judge at all, since keyword matching is fully
+  deterministic — a golden query set mixes clean keyword-style queries
+  (hard-asserted, never allowed to regress) with realistic full-sentence
+  phrasing that plain substring matching is known not to handle
+  (measured, not hidden, via a floor-gated blended hit rate). Verified
+  live against the real backend: **0.75 (6/8)** hit rate, with the two
+  known-limitation misses correctly distinguished from a real
+  regression — see HANDOFF.md "Keyword-mode hit-rate eval" and
+  `backend/README.md`'s "Keyword mode's hit-rate eval" section.
 - **All 9 images mirror from GHCR** (`backend`, `frontend`, `camunda`,
   `mariadb`, and DataHub's 7) — confirmed the office network can reach
   `ghcr.io` even though it can't reach Docker Hub or the company's own

@@ -72,7 +72,12 @@ things left off.
   `/api/chat`'s `user_key`, or `/api/preferences`.
 - Discover search has a general/AI mode toggle (defaults to general -
   plain keyword `ILIKE` match, no LLM call) - see HANDOFF.md's "General
-  search / AI search toggle" section.
+  search / AI search toggle" section. Keyword mode has its own
+  hit-rate eval, separate from AI mode's DeepEval suite, needing no LLM
+  judge since matching is fully deterministic (`backend/evals/
+  test_keyword_search_eval.py`, added 2026-09-11) - see
+  `backend/README.md`'s "Keyword mode's hit-rate eval" section and
+  HANDOFF.md's "Keyword-mode hit-rate eval" section.
 - `chat.py`'s greeting detection is keyword-only (`is_greeting()`) - an
   LLM-based fallback classification was tried and reverted (unreliable
   on a small local model, see HANDOFF.md's "Greeting detection fix"

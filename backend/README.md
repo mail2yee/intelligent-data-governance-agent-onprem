@@ -120,6 +120,41 @@ Runs worth keeping a record of (e.g. after a real change to the chat/
 WrenAI code, judge model, or trial count) get appended to `evals/EVAL_LOG.md`
 - not every ad-hoc local run, just ones worth comparing against later.
 
+### Keyword mode's hit-rate eval (no LLM judge needed)
+
+`evals/test_keyword_search_eval.py` is a separate eval for the default
+"general search" keyword mode (`chat.py`'s `keyword_search()`) - added
+2026-09-11 after noticing this path had zero accuracy visibility at
+all: the DeepEval suite above never exercises `mode: "keyword"`, and
+`chat.py`'s unmatched-query logging (`record_unmatched_query()`) is
+only wired into the AI-mode branch. Unlike the AI-mode suite, this
+needs **no LLM judge whatsoever** - keyword mode is fully
+deterministic (plain ILIKE substring AND-matching), so "did it return
+the expected id(s)?" is a plain boolean check:
+
+```bash
+pytest evals/test_keyword_search_eval.py -v -s   # real stack must be running, no judge env vars needed
+```
+
+The golden set (`evals/keyword_golden_queries.py`) deliberately mixes
+clean, well-formed keyword-style queries with realistic natural-
+language phrasing (no manually-inserted spaces) - the UI's own search
+placeholder shows a full natural sentence as its example, so real users
+type that way. A whole Chinese sentence with no whitespace becomes one
+giant token that almost never appears verbatim in a short catalog
+description; a whole English sentence requires every word (including
+"I", "want", "to") to independently match. Both realistically miss
+today - marked `expect_match=False` in the golden set, not asserted as
+failures, but not hidden either. Two tests report two different things:
+`test_keyword_search_never_regresses_on_known_working_queries` hard-
+asserts (no floor, no tolerance - this path has no non-determinism to
+excuse a miss) that the clean keyword-style queries keep working;
+`test_keyword_search_overall_hit_rate` prints and floor-gates the
+blended hit rate across the *whole* set, including the natural-phrasing
+cases - the realistic number a real user population would actually
+see. Confirmed live: **0.75 (6/8)** on this local stack, with the two
+known-limitation misses printed separately from any unexpected one.
+
 ## What's implemented vs. stubbed
 
 - `/health`, `/api/catalog`, `/api/catalog/{id}/connection` (falls back to

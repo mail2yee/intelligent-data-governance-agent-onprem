@@ -1906,6 +1906,58 @@ not new external content):
   correct answer, real product cards rendered below it, addable to the
   request cart like any other successful match.
 
+## Keyword-mode hit-rate eval (2026-09-11)
+
+User asked whether keyword mode (the default "general search" toggle,
+plain `ILIKE` matching, no LLM) had any accuracy metric the way AI mode
+has its DeepEval suite - it didn't. `chat.py`'s unmatched-query logging
+(`record_unmatched_query()`) is only wired into the AI-mode branch, and
+`test_chat_eval.py` never exercises `mode: "keyword"` at all. A real,
+user-facing gap: most users hit keyword mode by default, and it had
+zero visibility into how often it actually finds the right product.
+
+**Built**: `backend/evals/keyword_golden_queries.py` +
+`backend/evals/test_keyword_search_eval.py`, a new eval suite alongside
+the existing DeepEval one, but structurally simpler - keyword mode is
+fully deterministic (`keyword_search()`'s substring AND-matching over
+`search_text`), so there's no LLM judge, no trial-averaging, no pass
+rate. "Did it return the expected id(s)?" is a plain boolean.
+
+- Golden set deliberately mixes clean keyword-style queries (confirmed
+  working) with realistic full-sentence phrasing, matching the style
+  the UI's own search placeholder suggests to real users. Simulated
+  `_search_text()`'s exact AND-matching logic directly in Python against
+  the real `MOCK_CATALOG` before writing any golden query, to confirm
+  every prediction rather than guess: a whole Chinese sentence has no
+  whitespace, so it collapses into one giant token that never appears
+  verbatim in a catalog description; a whole English sentence requires
+  every single word ("i"/"want"/"to"/"analyze") to independently match,
+  which fails even on an on-topic query. Both marked `expect_match=False`
+  - a documented limitation of substring matching, not a bug to chase.
+- Two tests: `test_keyword_search_never_regresses_on_known_working_queries`
+  hard-asserts per-query on the `expect_match=True` subset (no floor -
+  determinism means a miss here is always a real regression, never
+  noise); `test_keyword_search_overall_hit_rate` computes and
+  floor-gates (`OVERALL_HIT_RATE_FLOOR = 0.5`) the blended hit rate
+  across the whole set including the natural-phrasing cases - the
+  number a real user population would actually see - and prints each
+  miss tagged "UNEXPECTED MISS" vs. "known-limitation miss" so a
+  regression is distinguishable from the known cost of natural phrasing
+  at a glance.
+- Lives in `backend/evals/`, not `backend/tests/` (same reasoning as the
+  AI-mode suite: hits the real, running `/api/chat` against real
+  MariaDB-backed `data_products`, not the mocked SQLite test suite) - so
+  it does **not** change the 189-pytest count, and needs the real stack
+  up to run.
+- **Verified live**: first run hit a transient `httpx.RemoteProtocolError`
+  against the real backend, not reproduced across 4 direct `curl` calls
+  for the same queries (all matched exactly as predicted) - retried the
+  full suite and got a clean pass: `Keyword search overall hit rate: 0.75
+  (6/8)`, with both known-limitation misses (`zh-capacity-full-sentence`,
+  `en-capacity-full-sentence`) correctly identified as such, not flagged
+  as regressions, and the hard-regression test green on all 4
+  known-working queries.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type
