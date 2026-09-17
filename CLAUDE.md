@@ -69,7 +69,15 @@ things left off.
   `{"Approve", "Reject"}` (previously anything but the exact string
   `"Reject"` silently became an approval). See HANDOFF.md's "Security
   review + interim identity fix" section before touching approvals,
-  `/api/chat`'s `user_key`, or `/api/preferences`.
+  `/api/chat`'s `user_key`, or `/api/preferences`. **A follow-up design
+  review (2026-09-18) found and fixed two more real bugs in the
+  approval flow**: `create_ticket`'s fallback-approver list wasn't
+  deduped against real owners already collected (could silently stick
+  a ticket in PENDING_APPROVAL forever), and TOFU identity had no
+  recovery path for a lost token (`DELETE /api/identity/{user_key}`,
+  API-key gated, added as the fix). See HANDOFF.md's "Design review:
+  two real approval-flow bugs" section before touching `create_ticket`'s
+  owners logic or identity recovery.
 - Discover search has a general/AI mode toggle (defaults to general -
   plain keyword `ILIKE` match, no LLM call) - see HANDOFF.md's "General
   search / AI search toggle" section. Keyword mode has its own
@@ -83,7 +91,7 @@ things left off.
   on a small local model, see HANDOFF.md's "Greeting detection fix"
   section) in favor of offline, human-reviewed query mining
   (`backend/scripts/review_unmatched_queries.py`).
-- Backend: `ruff` + `mypy` clean, 189 pytest tests (`backend/tests/`) plus
+- Backend: `ruff` + `mypy` clean, 194 pytest tests (`backend/tests/`) plus
   a separate DeepEval-based LLM-judge eval suite (`backend/evals/`, not
   part of a bare `pytest` run - see `backend/README.md`'s "Evals"
   section). Frontend: `oxlint` clean, 61 vitest tests. All pass.

@@ -1958,6 +1958,89 @@ rate. "Did it return the expected id(s)?" is a plain boolean.
   as regressions, and the hard-regression test green on all 4
   known-working queries.
 
+## Design review: two real approval-flow bugs (2026-09-18)
+
+User asked for a fresh design/architecture review, explicitly not a
+rehash of already-documented/accepted trade-offs (TOFU's scope, LLM
+gateway not yet connected, KM's weaker guarantee, keyword mode's
+phrasing limits, Camunda CVEs, the coarse API-key gate, etc. - all
+already covered elsewhere in this file). Read the actual current code
+rather than relying on memory of prior reviews. Found two real,
+currently-live bugs, both in the approval flow specifically, discussed
+with the user before fixing (design options laid out, user picked one
+for each):
+
+**Bug 1 - `owners` list not deduped against fallback approvers**
+(`main.py`'s `create_ticket`): the loop collecting real product owners
+already deduped against itself, but the `owners.extend(settings.default_fallback_approvers_list)`
+line right after it never checked against `owners` already collected.
+If a real product owner happens to also be one of the two configured
+fallback approvers, that email got **two** `Approval` rows. Since
+`submit_approval()` finds the row to update via
+`next(a for a in ticket.approvals if a.owner_email == owner_email)`, it
+only ever updates the *first* matching row - the duplicate row stays
+PENDING forever, so `all(s != "PENDING" for s in states)` never becomes
+true and the ticket can never reach APPROVED, even after every real
+distinct owner has approved. No self-recovery path short of editing the
+DB directly. Fix: dedup the fallback-approver loop against `owners` the
+same way the product-owner loop already does. No design trade-off here,
+straightforwardly a bug fix.
+
+**Bug 2 - TOFU identity has no recovery path once a token is lost**
+(`identity.py`): "first claim wins" (added 2026-09-05, see that
+section) is fine as a design, but there was no way back for someone who
+loses their token - cleared browser storage, switched device/browser -
+short of a DB admin manually deleting their `user_identities` row. This
+directly blocks the approval flow itself (a compliance director on a
+new laptop can no longer approve their own tickets), more immediately
+than the already-accepted "no real SSO yet" gap. Discussed three
+options with the user: (a) an admin-gated reset endpoint, (b) letting
+one `user_key` bind multiple tokens, (c) routing recovery through the
+existing ticket/approval workflow. Ruled out (b) - authorizing a second
+token either skips verification (defeats TOFU entirely) or requires the
+lost token anyway (doesn't solve the problem); ruled out (c) as
+overkill for what's really an ops action, not a business decision.
+Landed on (a), user confirmed.
+
+**Fix**: `identity.reset_identity(user_key)` deletes the existing
+`UserIdentity` row (if any) so the next `verify_or_claim()` call treats
+it as a brand-new claim; `DELETE /api/identity/{user_key}` exposes it
+on `api_router`, so it inherits the same `X-API-Key` gate as every
+other route with zero new code (this app has no separate admin/permission
+concept - a valid API key already is the closest thing to one). Does
+not touch the `user_key`'s remembered preferences, only the identity
+binding.
+
+**Tests**: `test_ticket_owners_deduped_when_a_fallback_approver_is_also_a_real_owner`
+(regression test for bug 1 - a product owner set to
+`compliance_director@example.com`, confirms no duplicate in
+`ticket["owners"]` and that the ticket actually reaches APPROVED once
+both distinct owners approve); `identity.py` unit tests for
+`reset_identity` (clears an existing binding, returns `False` for an
+unclaimed `user_key`, old token rejected / new token accepted after
+reset); route-level tests for `DELETE /api/identity/{user_key}` (404
+for an unclaimed key, and the full lost-token recovery flow end-to-end
+through the HTTP layer). 194 pytest, all green.
+
+**Verified live**: bug 1 can't be reproduced against this instance's
+real seeded catalog (none of its real owner emails happen to collide
+with the two configured fallback approvers) - the pytest regression
+test, which mocks the catalog to force the exact collision, is the
+correct verification vehicle here, and it's green; created a real
+ticket against the actual running backend afterward as a sanity check
+and confirmed 3 distinct owners with no duplicates. Bug 2's fix was
+fully live-verified via curl against the real running backend: claimed
+`tim@example.com` with a token, confirmed a different token was
+rejected (403), called `DELETE /api/identity/tim@example.com` (200),
+confirmed the new token now claims it fresh (200) and the old, lost
+token is now rejected (403) - the exact recovery scenario this exists
+for. `DELETE /api/identity/{unclaimed-key}` confirmed 404. The
+API-key gate itself isn't re-tested per-route (this app's local dev has
+`API_KEY` unset) - the new route sits on the same `api_router` every
+other protected route uses, which already has generic coverage in
+`tests/test_auth.py`, so it's protected structurally, not by a new
+per-route test.
+
 ## Engineering standards / tests — IN PROGRESS as of this commit
 
 The user asked for this explicitly (no hardcoding, linting/type

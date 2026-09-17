@@ -100,9 +100,7 @@ async def query_product_data(product_id: str, request: Request):
        that gap).
     """
     if product_id not in business_data.PRODUCT_DATA_SOURCES:
-        raise HTTPException(
-            status_code=400, detail="this product is not wired to a real data source"
-        )
+        raise HTTPException(status_code=400, detail="this product is not wired to a real data source")
 
     payload = await request.json()
     question = payload.get("question", "").strip()
@@ -187,6 +185,24 @@ async def delete_preferences(user_key: str, x_user_token: str = Header(default="
     return {"status": "success"}
 
 
+@api_router.delete("/api/identity/{user_key}")
+async def reset_identity(user_key: str):
+    """Admin-only recovery path for someone who's permanently locked out
+    of their own `user_key` (cleared browser storage, switched device) -
+    TOFU's "first claim wins" rule has no self-service reset by design,
+    so this is the only way back in short of editing the database
+    directly. Gated only by the route-level `require_api_key` dependency
+    (see `api_router`) - this app has no separate admin/permission
+    concept, and a valid API key is already the closest thing to one.
+    Does NOT touch that user_key's remembered preferences - only the
+    identity binding, so a legitimate re-claim keeps its history."""
+    cleared = await identity.reset_identity(user_key)
+    if not cleared:
+        raise HTTPException(status_code=404, detail="no identity claimed for this user_key")
+    logger.info("Identity reset for user_key=%s", user_key)
+    return {"status": "success"}
+
+
 def _ticket_to_dict(ticket: Ticket) -> dict:
     return {
         "id": ticket.id,
@@ -223,7 +239,15 @@ async def create_ticket(request: Request):
         if item and item["owner"] not in owners:
             owners.append(item["owner"])
     if len(owners) < 3:
-        owners.extend(settings.default_fallback_approvers_list)
+        # Dedup against `owners` too, not just within the fallback list -
+        # a fallback approver who also happens to be a real product owner
+        # would otherwise get two Approval rows for the same email, and
+        # submit_approval()'s `next(...)` lookup only ever updates the
+        # first one, leaving the ticket stuck in PENDING_APPROVAL forever
+        # (a real bug, found 2026-09-18).
+        for approver in settings.default_fallback_approvers_list:
+            if approver not in owners:
+                owners.append(approver)
 
     ticket_id = f"FAB-{uuid.uuid4().hex[:6].upper()}"
     async with async_session() as session:

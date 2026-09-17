@@ -16,7 +16,7 @@ Camunda), and what business logic / UI direction to carry over.
 
 **重要修正（2026-07-29）：Camunda 公司實際用的是 7.22 版**，不是原本以為的 Camunda 8（Zeebe/gRPC）——是完全不同的產品（REST API，沒有 gRPC/job worker 模型）。`camunda_client.py` 已經整個重寫並拿真實的本機 `camunda/camunda-bpm-platform:7.22.0` container 實測驗證過。
 
-**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **189** 個 pytest、前端 61 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。一般搜尋（關鍵字比對，非 AI 模式）也有自己的命中率 eval（不需要 LLM 判斷，因為關鍵字比對是完全確定性的），目前測出來命中率 0.75（6/8），細節見 HANDOFF.md。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
+**目前狀態：** 前端已經把 PoC 的 UI 完整 port 過來並跑過完整 Playwright 端到端測試，視覺風格已改成對齊公司 TADiS 設計系統；後端 **194** 個 pytest、前端 61 個 vitest 全過；`ruff`/`mypy`/`oxlint` 全乾淨。核准流程最近又抓到並修掉兩個真的 bug：fallback approver 沒跟真實 owner 去重（可能讓 ticket 永遠卡在待核准）、TOFU 身份掉了 token 沒有救援機制（新增 `DELETE /api/identity/{user_key}`，用既有的 API Key 保護）——細節見 HANDOFF.md「Design review: two real approval-flow bugs」那節。LLM 目前預設用本機 Ollama 的 **qwen3:14b**（`backend/.env`），OpenAI-compatible 假設已實測驗證可行，但**公司內部真實的 LLM gateway 還沒接過**——這是到公司要做的事。另外還做了一套 DeepEval eval 套件（`backend/evals/`）可以量化評分聊天比對的表現，目前只拿本機 Ollama 測過。一般搜尋（關鍵字比對，非 AI 模式）也有自己的命中率 eval（不需要 LLM 判斷，因為關鍵字比對是完全確定性的），目前測出來命中率 0.75（6/8），細節見 HANDOFF.md。**安全性：** 所有 `/api/*` route 現在支援 `X-API-Key` 驗證（預設關閉，設定 `API_KEY` 就會啟用）；前端曾經有 3 處真的 XSS 漏洞（把 LLM/使用者輸入直接當 HTML 渲染）已修掉——細節見 HANDOFF.md「Security review」。**搜尋：** Discover 頁多了「一般搜尋／AI 搜尋」切換（預設一般搜尋，純關鍵字比對不用 LLM）。
 
 **2026-08-05 架構調整：Camunda、DataHub、Postgres 現在都是「預設自架 image，image 抓不到就退回 config 裡設定的公司真實服務」**（Postgres 除外，一律自架，沒有退回機制）。DataHub 從原本跟 sibling repo 共用的獨立 `datahub docker quickstart` stack，改成直接併進這個 repo 自己的 `docker-compose.yml`（`datahub/docker-compose.datahub.yml`，7 個 container：GMS、前端、MySQL、Kafka、OpenSearch、Actions、一次性 init job）。新增 **`./deploy.sh`** 作為一鍵部署入口——會依序嘗試 pull 每個 image，抓得到就自架、抓不到就跳過並讓 app 退回用 `backend/.env` 裡已經設定的公司端點。全部 9 個 image（backend、frontend、camunda、mariadb、加上 DataHub 的 7 個）都走 `ghcr.io/mail2yee/...`，公司防火牆已確認連得到。細節見 `HANDOFF.md`「Self-hosted images with a config fallback」。
 
@@ -246,6 +246,26 @@ pytest backend/evals/ -v -s
   legitimate flow (claim an identity, approve your own row) still works
   through the actual browser UI — see HANDOFF.md "Security review +
   interim identity fix".
+- **Design review found and fixed two more real approval-flow bugs**
+  (2026-09-18) — a fresh code-level review (not a rehash of prior
+  findings) found: (1) `create_ticket`'s fallback-approver list wasn't
+  deduped against real owners already collected, so a real owner who
+  also happens to be a configured fallback approver got two `Approval`
+  rows for the same email — `submit_approval()` only ever updates the
+  first match, leaving the duplicate stuck PENDING forever with no
+  self-recovery path, even after every real distinct owner approved;
+  (2) TOFU identity (above) had no recovery path for a lost token —
+  cleared browser storage or a new device permanently locked someone
+  out of approving their own tickets, more immediately than the
+  already-accepted "no SSO yet" gap. Fixed with a dedup check on the
+  fallback-approver loop, and a new API-key-gated
+  `DELETE /api/identity/{user_key}` reset endpoint (reuses the existing
+  gate, no new permission concept). Verified live: the identity-reset
+  fix end-to-end via curl against the real running backend (lost
+  token rejected, reset, new token claims fresh, old token now
+  rejected); the owners-dedup fix via a regression test forcing the
+  exact collision the real seed data doesn't happen to contain — see
+  HANDOFF.md "Design review: two real approval-flow bugs".
 - **Fixed a confirmed-live bug: "how many data subjects are there?"
   used to get a "zero-hallucination blocked" warning** (2026-09-09)
   even though the free-text reply already answered correctly - the

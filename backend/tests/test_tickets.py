@@ -322,6 +322,40 @@ async def test_create_and_list_ticket(client, monkeypatch):
     assert all(a["decision"] == "PENDING" for a in ticket["approvals"].values())
 
 
+async def test_ticket_owners_deduped_when_a_fallback_approver_is_also_a_real_owner(client, monkeypatch):
+    # Regression test for a real bug (found 2026-09-18): when a real
+    # product owner happens to also be one of the configured fallback
+    # approvers, the old code appended the fallback list without
+    # checking against the owners already collected, creating two
+    # Approval rows for the same email. submit_approval()'s `next(...)`
+    # lookup only ever updates the first matching row, so the second,
+    # duplicate row stayed PENDING forever - the ticket could never
+    # reach APPROVED even after every real distinct owner approved.
+    await _mock_catalog(
+        monkeypatch,
+        {"p1": {"id": "p1", "owner": "compliance_director@example.com"}},
+    )
+    await _skip_camunda(monkeypatch)
+
+    res = await client.post("/api/tickets", json={"products": ["p1"], "objective": "t", "purpose": "PoC"})
+    ticket_id = res.json()["ticket_id"]
+
+    ticket = (await client.get("/api/tickets")).json()[0]
+    assert ticket["owners"] == ["compliance_director@example.com", "info_sec_auditor@example.com"]
+    assert len(ticket["owners"]) == len(set(ticket["owners"]))
+
+    await client.post(
+        f"/api/tickets/{ticket_id}/approvals",
+        json=_approval_payload("compliance_director@example.com", "Approve"),
+    )
+    await client.post(
+        f"/api/tickets/{ticket_id}/approvals",
+        json=_approval_payload("info_sec_auditor@example.com", "Approve"),
+    )
+    ticket = (await client.get("/api/tickets")).json()[0]
+    assert ticket["status"] == "APPROVED"
+
+
 async def test_ticket_stores_camunda_process_instance_id_and_completes_task_on_approval(client, monkeypatch):
     # Confirms the two new integration points added alongside the
     # Camunda 7 rewrite: create_ticket persists whatever process_instance_id
@@ -582,7 +616,9 @@ async def test_submit_approval_rejects_mismatched_user_key(client, monkeypatch):
     assert ticket["status"] == "PENDING_APPROVAL"
 
 
-async def test_submit_approval_rejects_a_token_that_does_not_match_the_owners_claimed_token(client, monkeypatch):
+async def test_submit_approval_rejects_a_token_that_does_not_match_the_owners_claimed_token(
+    client, monkeypatch
+):
     # This is the exploit chain the security review found: create a
     # ticket, read the owner list via GET /api/tickets (public), then
     # try to approve as that owner. Once the real owner has claimed
@@ -652,9 +688,7 @@ async def test_get_preferences_requires_matching_token(client, monkeypatch):
     assert res.status_code == 200
 
     # A different token can no longer read it.
-    res = await client.get(
-        "/api/preferences/tim@example.com", headers={"X-User-Token": "not-tims-token"}
-    )
+    res = await client.get("/api/preferences/tim@example.com", headers={"X-User-Token": "not-tims-token"})
     assert res.status_code == 403
 
 
@@ -665,9 +699,7 @@ async def test_delete_preferences_requires_matching_token(client, monkeypatch):
     # Establish the real claim first, exactly as get_preferences_returns_saved_list does.
     await client.get("/api/preferences/tim@example.com", headers={"X-User-Token": "tim-token"})
 
-    res = await client.delete(
-        "/api/preferences/tim@example.com", headers={"X-User-Token": "not-tims-token"}
-    )
+    res = await client.delete("/api/preferences/tim@example.com", headers={"X-User-Token": "not-tims-token"})
     assert res.status_code == 403
 
     # Preference survives the rejected delete attempt.
@@ -675,9 +707,34 @@ async def test_delete_preferences_requires_matching_token(client, monkeypatch):
     assert res.json() == {"preferences": ["usually asks about capacity data"]}
 
 
+async def test_reset_identity_returns_404_for_unknown_user_key(client):
+    res = await client.delete("/api/identity/nobody@example.com")
+    assert res.status_code == 404
+
+
+async def test_reset_identity_lets_a_locked_out_user_reclaim_with_a_new_token(client):
+    # The actual recovery scenario this endpoint exists for: Tim claimed
+    # his identity, lost the token (cleared browser storage), and would
+    # otherwise be permanently locked out of approving his own tickets.
+    res = await client.get("/api/preferences/tim@example.com", headers={"X-User-Token": "tims-lost-token"})
+    assert res.status_code == 200
+
+    # Without a reset, a new token is correctly rejected.
+    res = await client.get("/api/preferences/tim@example.com", headers={"X-User-Token": "a-new-token"})
+    assert res.status_code == 403
+
+    res = await client.delete("/api/identity/tim@example.com")
+    assert res.status_code == 200
+
+    # Now the new token can claim the identity fresh.
+    res = await client.get("/api/preferences/tim@example.com", headers={"X-User-Token": "a-new-token"})
+    assert res.status_code == 200
+
+
 async def test_query_rejected_ticket_does_not_grant_access(client, monkeypatch):
     await _mock_catalog(
-        monkeypatch, {"customer-capacity-allocation": {"id": "customer-capacity-allocation", "owner": "a@example.com"}}
+        monkeypatch,
+        {"customer-capacity-allocation": {"id": "customer-capacity-allocation", "owner": "a@example.com"}},
     )
     await _skip_camunda(monkeypatch)
     res = await client.post(

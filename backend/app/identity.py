@@ -36,6 +36,25 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+async def reset_identity(user_key: str) -> bool:
+    """Clears an existing TOFU binding so `user_key` can be re-claimed by
+    a new token - the only recovery path for someone who's lost their
+    original token (cleared browser storage, switched device/browser),
+    since `verify_or_claim` itself has no self-service recovery by
+    design (a self-service reset would defeat the whole point of "first
+    claim wins"). Gated by `require_api_key` at the route level (see
+    main.py) rather than a new permission concept of its own - this app
+    already treats a valid API key as the closest thing to "admin" it
+    has. Returns whether a binding actually existed to clear."""
+    async with async_session() as session:
+        existing = await session.get(UserIdentity, user_key)
+        if existing is None:
+            return False
+        await session.delete(existing)
+        await session.commit()
+        return True
+
+
 async def verify_or_claim(user_key: str, token: str) -> bool:
     """True if `token` is valid for `user_key` - either it already
     matches what was claimed first, or `user_key` has never been
